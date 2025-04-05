@@ -1,0 +1,1 @@
+export { DocumentDetail } from './document-detail'; 

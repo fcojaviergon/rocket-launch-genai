@@ -1,0 +1,109 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.pnpm-debug.log
+.next/
+out/
+.cache/
+.parcel-cache/
+.nuxt/
+.output/
+.vercel/
+
+# Virtual environments
+venv/
+.env
+.venv
+env/
+ENV/
+.env.*
+!.env.example
+
+# System files
+.DS_Store
+Thumbs.db
+.directory
+*.swp
+*.swo
+*~
+
+# IDEs and editors
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.code-workspace
+.cursor/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Database files
+*.sqlite3
+*.db
+
+# Local configuration files
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.production
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Frontend Build
+frontend/.next/
+frontend/node_modules/
+
+# Backend specific
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/**/__pycache__/
+backend/.env.*
+backend/storage/documents/*
+!backend/storage/documents/.gitkeep
+
+# Misc
+.windsurfrules

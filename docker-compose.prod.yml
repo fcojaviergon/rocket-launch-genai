@@ -1,0 +1,84 @@
+# docker-compose.prod.yml (Production settings)
+# Use with `docker-compose -f docker-compose.yml -f docker-compose.prod.yml up ...`
+
+services:
+  postgres:
+    # Consider adding resource limits for production
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '0.50'
+    #       memory: 512M
+    # Use a strong, unique password managed via secrets if possible
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-prod_user} # Read from host env or default
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme} # Read from host env or default
+      POSTGRES_DB: ${POSTGRES_DB:-prod_db}       # Read from host env or default
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # DO NOT mount init.sql in production unless absolutely necessary for first run
+      # - ./init.sql:/docker-entrypoint-initdb.d/init.sql 
+
+  redis:
+    # Consider adding resource limits
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '0.25'
+    #       memory: 256M
+    pass
+
+  backend:
+    env_file:
+      - ./backend/.env.production
+    # Production builds should have code baked in; remove volume mounts for code
+    volumes:
+      - document_storage:/app/storage/documents
+    # Command should be defined in the Dockerfile's ENTRYPOINT/CMD for production
+    # No command override needed here usually
+    # Consider adding resource limits
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1.0'
+    #       memory: 1G
+
+  celery_worker:
+    env_file:
+      - ./backend/.env.production
+    # Production builds should have code baked in
+    volumes:
+      - document_storage:/app/storage/documents
+    # Command should be defined in the Dockerfile's ENTRYPOINT/CMD or base compose file
+    # Consider adding resource limits and replicas
+    # deploy:
+    #   replicas: 2 # Example: run 2 workers
+    #   resources:
+    #     limits:
+    #       cpus: '1.0'
+    #       memory: 1G
+
+  flower:
+     env_file:
+      - ./backend/.env.production # Uses prod Redis broker URL
+     # Optionally disable Flower in production or secure it properly
+
+  frontend:
+    env_file:
+      - ./frontend/.env.production
+    # Production builds should have code baked in
+    volumes:
+      - ./frontend/public:/app/public # Public assets might still be needed depending on build
+    # Command should be defined in the Dockerfile's ENTRYPOINT/CMD for production start
+    # Consider adding resource limits
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '0.5'
+    #       memory: 512M
+
+# Define persistent volumes
+volumes:
+  postgres_data:
+  redis_data: # Define if Redis persistence is needed
+  document_storage: 
