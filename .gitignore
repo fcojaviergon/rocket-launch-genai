@@ -102,6 +102,7 @@ backend/__pycache__/
 backend/**/__pycache__/
 backend/**/**/__pycache__/
 backend/.env.*
+!backend/.env.example
 backend/storage/documents/*
 !backend/storage/documents/.gitkeep
 

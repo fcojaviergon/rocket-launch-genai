@@ -48,13 +48,20 @@ GRANT ALL PRIVILEGES ON DATABASE rocket_launch_genai TO rocket;
 
 ### 4. Configure Environment Variables
 
-Copy the example environment files:
+For Docker installations, you only need to copy the root .env file:
 
 ```bash
+# Only copy the root .env file for global variables
 cp .env.example .env
-cp frontend/.env.development frontend/.env.local
-cp backend/.env.development backend/.env.local
 ```
+
+The environment files for each service are already configured:
+- `backend/.env.development` - For Docker development
+- `frontend/.env.development` - For Docker development
+- `backend/.env.production` - For Docker production
+- `frontend/.env.production` - For Docker production
+
+These files do NOT need to be copied to .env.local, as Docker Compose will use them automatically.
 
 #### Key Environment Variables:
 
@@ -72,28 +79,25 @@ REDIS_PASSWORD=redis123
 OPENAI_API_KEY=your_openai_key
 ```
 
-##### Backend `.env.local`:
+##### Check backend/.env.development:
 ```env
-DATABASE_URL=postgresql://rocket:rocket123@postgres:5432/rocket_launch_genai
+# URLs use Docker service names
+DATABASE_URL=postgresql+asyncpg://rocket:rocket123@postgres:5432/rocket_launch_genai
 REDIS_URL=redis://redis:6379/0
-SECRET_KEY=your_secret_key_here
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-SUPERUSER_EMAIL=admin@example.com
-SUPERUSER_PASSWORD=password
 ```
 
-##### Frontend `.env.local`:
+##### Check frontend/.env.development:
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXTAUTH_URL=http://localhost:3000
-NEXTAUTH_SECRET=your_nextauth_secret_here
+# URLs for internal and external connections
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+INTERNAL_BACKEND_URL=http://backend:8000
 ```
 
 ### 5. Build and Start Containers
 
 ```bash
-# Start all services
+# Start all services in development mode
+# This will automatically use the .env.development files
 docker-compose up -d
 
 # View logs during startup
@@ -113,7 +117,7 @@ After successful deployment, the services will be available at:
 
 Default admin login:
 - Email: admin@example.com
-- Password: password (as set in backend/.env.local)
+- Password: password (/backend/database/init_db.py definition)
 
 ## Common Docker Commands
 
@@ -142,13 +146,26 @@ docker-compose up -d --build
 For production deployment, use the production configuration:
 
 ```bash
-# Copy production env files
-cp frontend/.env.production frontend/.env.local
-cp backend/.env.production backend/.env.local
-
 # Start with production configuration
+# This will automatically use the .env.production files
 docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
+
+Make sure to review and update the production environment files before deployment:
+- `backend/.env.production`
+- `frontend/.env.production`
+
+Do NOT copy these files to .env.local, as docker-compose.prod.yml is configured to use the .env.production files directly.
+
+## Environment File Usage Guide
+
+| Environment | Root File | Frontend File | Backend File | Command |
+|-------------|-----------|---------------|--------------|---------|
+| Local Dev (no Docker) | N/A | .env.local | .env.local | See LOCAL_INSTALLATION.md |
+| Docker Development | .env | .env.development | .env.development | docker-compose up -d |
+| Docker Production | .env | .env.production | .env.production | docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d |
+
+**Important:** The .env.local files are only for local development without Docker. Do not rename or copy files to .env.local for Docker deployments.
 
 ## Troubleshooting
 
