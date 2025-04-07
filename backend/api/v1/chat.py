@@ -10,10 +10,11 @@ import asyncio
 from datetime import datetime
 from typing import List, Optional
 
-from core.deps import get_db, get_current_user
+from core.dependencies import get_db, get_current_user
 from database.models.user import User
 from database.models.conversation import Conversation, Message
 from services.ai.chat_service import ChatService
+from core.dependencies import get_chat_service
 from schemas.chat import (
     ChatRequest, 
     ChatResponse, 
@@ -26,14 +27,18 @@ from schemas.chat import (
     RagResponse
 )
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
-chat_service = ChatService()
 
 @router.post("", response_model=ChatResponse)
 async def create_chat_message(
     request: ChatRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    chat_service: ChatService = Depends(get_chat_service)
 ):
     """
     Send a message to the assistant and receive a response
@@ -64,7 +69,8 @@ async def create_chat_message(
 @router.get("/conversations", response_model=list[ConversationListResponse])
 async def list_conversations(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    chat_service: ChatService = Depends(get_chat_service)
 ):
     """
     List all user conversations
@@ -82,7 +88,8 @@ async def list_conversations(
 async def get_conversation(
     conversation_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    chat_service: ChatService = Depends(get_chat_service)
 ):
     """
     Get a conversation by ID with all its messages
@@ -112,7 +119,8 @@ async def get_conversation(
 async def create_conversation(
     conversation: ConversationCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    chat_service: ChatService = Depends(get_chat_service)
 ):
     """
     Create a new conversation
@@ -143,7 +151,8 @@ async def update_conversation(
     conversation_id: uuid.UUID,
     conversation: ConversationUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    chat_service: ChatService = Depends(get_chat_service)
 ):
     """
     Update an existing conversation
@@ -181,7 +190,8 @@ async def update_conversation(
 async def delete_conversation(
     conversation_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    chat_service: ChatService = Depends(get_chat_service)
 ):
     """
     Delete a conversation
@@ -194,136 +204,48 @@ async def delete_conversation(
         )
     return None
 
-@router.post("/stream", response_class=StreamingResponse)
+# Define media type for streaming JSON lines
+STREAMING_JSON_MEDIA_TYPE = "application/x-ndjson"
+
+@router.post("/stream", response_class=StreamingResponse, responses={200: {"content": {STREAMING_JSON_MEDIA_TYPE: {}}}}) 
 async def stream_chat_message(
     chat_request: ChatRequest,
     session: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    chat_service: ChatService = Depends(get_chat_service)
 ):
     try:
-        # Check if we have a conversation ID
-        conversation_id = chat_request.conversation_id
-        conversation = None
-        
-        # If there's no conversation ID, create a new one
-        if not conversation_id:
-            # Create title based on message content
-            title = chat_request.content[:30] + "..." if len(chat_request.content) > 30 else chat_request.content
-            new_conversation = Conversation(
-                title=title,
-                user_id=current_user.id
-            )
-            session.add(new_conversation)
-            await session.commit()
-            await session.refresh(new_conversation)
-            conversation_id = new_conversation.id
-            conversation = new_conversation
-        else:
-            # Verify that the conversation exists and belongs to the user
-            conversation_query = select(Conversation).where(
-                Conversation.id == conversation_id,
-                Conversation.user_id == current_user.id
-            )
-            result = await session.execute(conversation_query)
-            conversation = result.scalar_one_or_none()
-            
-            if not conversation:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-        
-        # Save user message
-        user_message = Message(
-            content=chat_request.content,
-            role="user",
-            conversation_id=conversation_id
-        )
-        session.add(user_message)
-        await session.commit()
-        await session.refresh(user_message)
-        
-        # Get message history for this conversation context
-        messages_query = select(Message).where(
-            Message.conversation_id == conversation_id
-        ).order_by(Message.created_at)
-        result = await session.execute(messages_query)
-        messages = result.scalars().all()
-        
-        # Format messages for OpenAI
-        formatted_messages = [
-            {"role": msg.role, "content": msg.content}
-            for msg in messages
-        ]
-        
-        # Create generator for streaming response
-        async def generate_stream():
-            # Using a new session context to avoid issues with open connections
-            async with AsyncSession(session.bind) as stream_session:
-                try:
-                    # Send conversation information at the beginning
-                    conversation_info = {
-                        "type": "conversation_info",
-                        "conversation_id": str(conversation_id),
-                        "user_message_id": str(user_message.id)
-                    }
-                    yield f"data: {json.dumps(conversation_info)}\n\n"
-                    
-                    # Variable to build the complete response
-                    full_content = ""
-                    assistant_message = None
-                    
-                    # Get streaming response
-                    stream = await chat_service.generate_stream_response(
-                        formatted_messages,
-                        model=chat_request.model,
-                        temperature=chat_request.temperature or 0.7
-                    )
-                    
-                    async for chunk in stream:
-                        if hasattr(chunk.choices[0], 'delta') and chunk.choices[0].delta.content is not None:
-                            content = chunk.choices[0].delta.content
-                            full_content += content
-                            yield f"data: {json.dumps({'type': 'content', 'delta': content})}\n\n"
-                            await asyncio.sleep(0)  # Avoid blocking
-                
-                    # Save complete message in the database
-                    if full_content:
-                        assistant_message = Message(
-                            content=full_content,
-                            role="assistant",
-                            conversation_id=conversation_id
-                        )
-                        stream_session.add(assistant_message)
-                        await stream_session.commit()
-                        await stream_session.refresh(assistant_message)
-                        
-                        # Send saved message information
-                        message_info = {
-                            "type": "message_info",
-                            "id": str(assistant_message.id),
-                            "timestamp": assistant_message.created_at.isoformat()
-                        }
-                        yield f"data: {json.dumps(message_info)}\n\n"
-                    
-                    # Mark end of stream
-                    yield f"data: [DONE]\n\n"
-                except Exception as e:
-                    print(f"Error in streaming: {str(e)}")
-                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-                    yield f"data: [DONE]\n\n"
-        
-        return StreamingResponse(
-            generate_stream(),
-            media_type="text/event-stream"
+        # Delegate the entire streaming logic to the service
+        stream_generator = chat_service.stream_chat_response_full(
+            db=session, 
+            user=current_user, 
+            chat_request=chat_request
         )
         
+        # Return the async generator from the service within StreamingResponse
+        return StreamingResponse(stream_generator, media_type=STREAMING_JSON_MEDIA_TYPE)
+
+    except ValueError as e:
+        # Handle known errors like conversation not found from service
+        logger.error(f"Value error during chat stream: {e}")
+        # Cannot raise HTTPException directly here as headers are already sent.
+        # Client needs to handle potential error messages within the stream.
+        async def error_stream():
+             yield json.dumps({"error": str(e)}) + "\n"
+        return StreamingResponse(error_stream(), media_type=STREAMING_JSON_MEDIA_TYPE, status_code=404)
     except Exception as e:
-        print(f"Error in stream_chat_message: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing streaming message: {str(e)}")
+        logger.error(f"Error during chat stream: {e}", exc_info=True)
+        # General error - attempt to stream an error message
+        async def error_stream():
+             yield json.dumps({"error": "An internal server error occurred during streaming."}) + "\n"
+        return StreamingResponse(error_stream(), media_type=STREAMING_JSON_MEDIA_TYPE, status_code=500)
 
 @router.post("/rag", response_model=RagResponse)
 async def query_documents(
     request: RagRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    chat_service: ChatService = Depends(get_chat_service)
 ):
     """
     Generates a response using RAG on the user's documents

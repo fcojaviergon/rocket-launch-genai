@@ -8,14 +8,26 @@ from uuid import UUID
 from database.models.pipeline import Pipeline, PipelineExecution, ExecutionStatus
 from database.models.document import Document, DocumentProcessingResult
 from modules.pipeline.processors import get_processor, AVAILABLE_PROCESSORS
+from core.llm_interface import LLMClientInterface
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
 class PipelineExecutor:
     """Class to execute document processing pipelines"""
     
-    def __init__(self):
-        self.context = {}
+    def __init__(self, llm_client: Optional[LLMClientInterface] = None):
+        """
+        Initialize the executor.
+        
+        Args:
+            llm_client: An optional pre-initialized LLM client to be passed to processors.
+        """
+        self.context = {} # Runtime context for a single execution
+        self.llm_client = llm_client # Store the generic client to pass to processors
+
+        if not self.llm_client:
+            logger.warning("PipelineExecutor initialized without an OpenAI client. OpenAI processors will fail.")
     
     async def execute(self, execution_id: UUID, pipeline: Pipeline, document: Document) -> Dict[str, Any]:
         """
@@ -60,11 +72,13 @@ class PipelineExecutor:
                 step_context = {k: v for k, v in self.context.items() 
                                if not k.startswith('_') and not callable(v)}
                 
-                step_result = await self._execute_step(step, document.content, step_context)
+                # Pass the full document object to _execute_step
+                step_result = await self._execute_step(step, document, step_context)
                 
                 # If there is an error in the step, register it and continue with the next one
                 if "error" in step_result:
-                    error_msg = f"Error in step '{step.get('name', 'unknown')}': {step_result['error']}"
+                    # Use repr for error to potentially catch more details
+                    error_msg = f"Error in step '{step.get('name', 'unknown')}': {repr(step_result['error'])}"
                     logger.error(error_msg)
                     self.context["errors"].append(error_msg)
                 
@@ -84,7 +98,7 @@ class PipelineExecutor:
             return self._cleanup_and_return(self.context)
             
         except Exception as e:
-            error_msg = f"Error executing pipeline: {str(e)}"
+            error_msg = f"Unhandled error executing pipeline: {repr(e)}"
             logger.error(error_msg, exc_info=True)
             self.context["errors"].append(error_msg)
             return self._cleanup_and_return(self.context)
@@ -96,13 +110,13 @@ class PipelineExecutor:
                          if not k.startswith('_') and not callable(v)}
         return result_context
     
-    async def _execute_step(self, step: Dict[str, Any], document_content: str, step_context: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def _execute_step(self, step: Dict[str, Any], document: Document, step_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Execute a step of the pipeline
         
         Args:
             step: Step configuration
-            document_content: Document content
+            document: The full Document ORM object
             step_context: Context specific for this step (optional)
             
         Returns:
@@ -126,34 +140,33 @@ class PipelineExecutor:
             
             # Get the processor with the cleaned configuration
             processor_type = step.get("name", "text_extraction")
-            processor = get_processor(processor_type, step_config)
+            # Pass the shared LLM client to get_processor
+            processor = get_processor(processor_type, step_config, llm_client=self.llm_client)
             
             # Execute the processor
-            # Special case for embedding processor which needs the document object
-            if processor_type == "embedding" and hasattr(processor, "process") and 'document_id' in context:
-                from database.session import get_db
-                # Get a new db session
-                async for db in get_db():
-                    # Get the document from the database
-                    document = await db.get(Document, UUID(context['document_id']))
-                    if document:
-                        result = await processor.process(document, context)
-                    else:
-                        result = {"error": f"Document not found: {context['document_id']}"}
-                    break  # Only need one iteration
-            else:
+            # Pass the Document object if processor is 'embedding', otherwise pass content string
+            if processor_type == "embedding":
+                 if hasattr(processor, 'process'): # Check if processor has the method
+                     # Ensure the embedding processor's process method expects Document object
+                     result = await processor.process(document, context) 
+                 else:
+                     result = {"error": f"Embedding processor '{processor_type}' is missing the process method."}
+            elif hasattr(processor, 'process'):
                 # Regular processors get the document content as string
-                result = await processor.process(document_content, context)
-            
+                content_to_process = document.content if document.content else ""
+                result = await processor.process(content_to_process, context)
+            else:
+                 result = {"error": f"Processor '{processor_type}' is missing the process method."}
+
             # Log the result (excluding large keys)
             log_result = {k: v for k, v in result.items() if k not in ('embeddings', 'chunks_text')}
             #logger.info(f"Step '{step_name}' result: {log_result}")
             
             return result
         except Exception as e:
-            logger.error(f"Error in step '{step.get('name', 'unknown')}': {str(e)}", exc_info=True)
+            logger.error(f"Error executing step '{step.get('name', 'unknown')}': {repr(e)}", exc_info=True)
             return {
-                "error": str(e),
+                "error": repr(e), # Return repr for potentially more detail
                 "processor": step.get("name", "unknown"),
                 "timestamp": context.get("timestamp", "")
             }

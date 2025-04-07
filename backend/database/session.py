@@ -3,7 +3,6 @@ Settings for the database session
 """
 from typing import AsyncGenerator
 from contextlib import asynccontextmanager
-import re
 
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
@@ -14,7 +13,6 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 from sqlalchemy import event
 import asyncio
-import greenlet
 import logging
 
 from core.config import settings
@@ -112,17 +110,7 @@ async def get_async_session_context() -> AsyncGenerator[AsyncSession, None]:
         raise # 4. Re-raise the exception
     finally:
         # 5. Close the session at the end (always):
-        try:
-            # Properly close the session
-            await session.close()
-            
-            # Get the raw connection from the session if available
-            # This ensures underlying connections are properly released
-            if hasattr(session, 'bind') and session.bind is not None:
-                engine = session.bind
-                if hasattr(engine, 'dispose'):
-                    await engine.dispose()
-                    
-            logger.debug(f"Session {id(session)} closed in loop {id(loop)}.")
-        except Exception as close_error:
-            logger.error(f"Error closing session {id(session)}: {close_error}", exc_info=True)
+        # Only close the session, do NOT dispose the engine.
+        # Disposing the engine closes the entire connection pool.
+        await session.close()
+        logger.debug(f"Session {id(session)} closed in loop {id(loop)}.")

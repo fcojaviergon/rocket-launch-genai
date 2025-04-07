@@ -92,8 +92,8 @@ def configure_logging() -> logging.Logger:
     Configure logging for the application
     
     Sets up logging based on environment (development vs production):
-    - In development: Human-readable format with DEBUG level
-    - In production: JSON structured logs with INFO level
+    - In development: Human-readable format with DEBUG level, logs to console.
+    - In production: JSON structured logs with INFO level, logs to rotating files.
     
     Returns:
         A configured root application logger
@@ -101,34 +101,50 @@ def configure_logging() -> logging.Logger:
     log_level = logging.DEBUG if settings.ENVIRONMENT == "development" else logging.INFO
     
     # Create log directory structure
-    log_dir = Path(os.path.dirname(os.path.dirname(__file__))) / "logs"
+    log_dir = Path(settings.LOG_DIR)
     access_log_path = log_dir / "access.log"
     error_log_path = log_dir / "errors.log"
     app_log_path = log_dir / "app.log"
     security_log_path = log_dir / "security.log"
     
     # Create directory if it doesn't exist
-    log_dir.mkdir(exist_ok=True, parents=True)
+    try:
+        log_dir.mkdir(exist_ok=True, parents=True)
+    except OSError as e:
+        # Use basicConfig for fallback logging if directory creation fails
+        logging.basicConfig(level=logging.ERROR)
+        logging.error(f"Failed to create log directory {log_dir}: {e}")
+        # Potentially raise the error or exit if logging to file is critical
+        # For now, we'll proceed, but file logging might not work
     
     # Configure root logger
     if settings.ENVIRONMENT == "development":
-        # Human-readable format for development
+        # Human-readable format for development, logs to console
         log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         date_format = "%Y-%m-%d %H:%M:%S"
         
-        # Configure basic logging
+        # Configure basic logging (handles root logger and console output)
         logging.basicConfig(
             level=log_level,
             format=log_format,
             datefmt=date_format,
         )
+        # Root logger configured, app_logger will propagate to it by default
     else:
         # JSON format for production (better for log analysis)
-        logging.basicConfig(level=log_level)
-        # Set JSON formatter for root logger
-        root_handler = logging.StreamHandler()
-        root_handler.setFormatter(JsonFormatter())
-        logging.getLogger().handlers = [root_handler]
+        
+        # Configure root logger to only use our JSON handler (e.g., for console)
+        root_logger = logging.getLogger()
+        root_logger.setLevel(log_level)
+
+        # Remove existing handlers attached by basicConfig or libraries
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+
+        # Add our JSON formatter StreamHandler (for console/stdout)
+        json_console_handler = logging.StreamHandler()
+        json_console_handler.setFormatter(JsonFormatter())
+        root_logger.addHandler(json_console_handler)
     
     # Reduce verbosity of external libraries in production
     if settings.ENVIRONMENT == "production":
@@ -143,7 +159,10 @@ def configure_logging() -> logging.Logger:
     # Create app logger
     app_logger = logging.getLogger("app")
     app_logger.setLevel(log_level)
-    app_logger.propagate = False  # Don't propagate to root logger
+    
+    # In development, let app logs propagate to the root logger (console)
+    # In production, file handlers are attached, so no need to propagate to root's console handler
+    app_logger.propagate = settings.ENVIRONMENT == "development"
     
     # Configure handlers based on environment
     if settings.ENVIRONMENT == "production":
@@ -194,9 +213,10 @@ def configure_logging() -> logging.Logger:
     access_logger.propagate = False
     
     access_handler = logging.handlers.RotatingFileHandler(
-        access_log_path,
-        maxBytes=10485760,  # 10MB
+        filename=access_log_path,
+        maxBytes=10*1024*1024,  # 10MB
         backupCount=5,
+        encoding='utf-8' # Specify encoding
     )
     access_handler.setLevel(logging.INFO)
     access_handler.setFormatter(formatter)
@@ -204,10 +224,9 @@ def configure_logging() -> logging.Logger:
     
     # Console handler for all app logs in development
     if settings.ENVIRONMENT == "development":
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(log_level)
-        console_handler.setFormatter(formatter)
-        app_logger.addHandler(console_handler)
+        # No need for a separate console handler on app_logger
+        # Logs will propagate to the root logger which has a console handler via basicConfig
+        pass
     
     logging.info(f"Logging configured for {settings.ENVIRONMENT} environment")
     return app_logger 

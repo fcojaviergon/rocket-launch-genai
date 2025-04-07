@@ -3,6 +3,7 @@ from typing import Any, Union
 from jose import jwt
 from passlib.context import CryptContext
 from core.config import settings
+import uuid
 
 # Centralized password context for consistent hashing across the application
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -23,7 +24,12 @@ def create_access_token(subject: Union[str, Any], expires_delta: timedelta = Non
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    to_encode = {"exp": expire, "sub": str(subject)}
+    to_encode = {
+        "exp": expire,
+        "iat": datetime.now(timezone.utc), # Issued at
+        "sub": str(subject),
+        "type": "access" # Token type
+    }
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
     return encoded_jwt
 
@@ -38,7 +44,13 @@ def create_refresh_token(subject: Union[str, Any]) -> str:
         str: Encoded JWT refresh token
     """
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode = {"exp": expire, "sub": str(subject)}
+    to_encode = {
+        "exp": expire,
+        "iat": datetime.now(timezone.utc), # Issued at
+        "sub": str(subject),
+        "type": "refresh", # Token type
+        # Optionally add "jti": str(uuid.uuid4()) here for revocation
+    }
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
     return encoded_jwt
 

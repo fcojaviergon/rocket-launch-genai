@@ -65,7 +65,7 @@ These files do NOT need to be copied to .env.local, as Docker Compose will use t
 
 #### Key Environment Variables:
 
-##### Root `.env`:
+##### Base `.env.development`:
 ```env
 # PostgreSQL
 POSTGRES_USER=postgres

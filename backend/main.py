@@ -1,24 +1,20 @@
 import sys
 import os
-import logging
-
-# Add the root directory to the path to be able to import modules
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from fastapi import FastAPI, Response, Request, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Project imports
 from api.v1.api import api_router
 from core.config import settings
 from database.init_db import init_db
-from core.logging_config import configure_logging, get_logger
+from core.logging_config import configure_logging
 from core.middleware.logging_middleware import RequestLoggingMiddleware
 from core.middleware.security_middleware import SecurityMiddleware
 from core.exceptions import setup_exception_handlers
 from core.health import comprehensive_health_check, check_database_connection
 
-# Import handlers to register them
+# Import handlers to register them (e.g., event handlers or similar)
+# TODO: Consider making registration more explicit if possible.
 import modules.auth.handlers
 
 # Configure logging using our enhanced logging configuration
@@ -62,6 +58,12 @@ async def startup_event():
     logger.info("Starting application...")
     # Initialize the database and create default users if they don't exist
     try:
+        # Ensure document storage path exists (moved from config init)
+        # Although settings ensures this on import, doing it here is more explicit for startup
+        # os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
+        # logger.info(f"Ensured document storage directory exists: {settings.DOCUMENT_STORAGE_PATH}")
+        # Note: Decided against moving os.makedirs here as it's handled safely after Settings() in config.py
+
         await init_db()
         logger.info("Database initialized correctly")
     except Exception as e:

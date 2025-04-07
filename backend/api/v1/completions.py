@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from services.ai.completion_service import CompletionService
-from core.deps import get_current_user
+from core.dependencies import get_current_user
 from database.models.user import User
 from schemas.completion import CompletionRequest, CompletionResponse
 
@@ -14,7 +14,7 @@ router = APIRouter()
 async def create_completion(
     request: CompletionRequest,
     current_user: User = Depends(get_current_user),
-    completion_service: CompletionService = Depends(lambda: CompletionService())
+    completion_service: CompletionService = Depends()
 ):
     """
     Generates a text completion based on the provided prompt.

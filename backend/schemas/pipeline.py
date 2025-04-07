@@ -67,8 +67,7 @@ class PipelineExecutionResponse(PipelineExecutionBase):
     status: str
     pipeline_name: Optional[str] = None
     results: Optional[Dict[str, Any]] = None
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    error_message: Optional[str] = Field(None)
     started_at: datetime
     completed_at: Optional[datetime] = None
     created_at: Optional[datetime] = None

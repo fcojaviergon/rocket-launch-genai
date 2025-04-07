@@ -6,23 +6,40 @@ from sqlalchemy.future import select
 from sqlalchemy import desc
 from openai import AsyncOpenAI
 import httpx
+import json
+import logging
 
 from core.config import settings
 from database.models.conversation import Conversation, Message
 from database.models.user import User
 from database.models.document import Document
 from modules.document.service import DocumentService
+from core.llm_interface import LLMClientInterface, LLMMessage
+
+logger = logging.getLogger(__name__)
 
 class ChatService:
-    """Service for chat with AI assistant with history"""
+    """Service for chat with AI assistant, RAG, and conversation management."""
     
-    def __init__(self):
-        self.api_key = settings.OPENAI_API_KEY
-        self.default_model = "gpt-4"
-        self.client = AsyncOpenAI(
-            api_key=self.api_key,
-            http_client=httpx.AsyncClient()
-        )
+    def __init__(self, llm_client: Optional[LLMClientInterface] = None, document_service: Optional[DocumentService] = None):
+        """
+        Initialize ChatService.
+        
+        Args:
+            llm_client: An optional pre-initialized client implementing LLMClientInterface.
+            document_service: An optional pre-initialized DocumentService instance.
+        """
+        # Store injected dependencies or handle None if not provided
+        self.llm_client = llm_client
+        self.document_service = document_service
+        self.default_model = settings.DEFAULT_CHAT_MODEL or "gpt-4"
+
+        # Log a warning if the essential OpenAI client is missing
+        if not self.llm_client:
+            logger.warning("ChatService initialized without an OpenAI client. Chat functionalities will fail.")
+        # Log a warning if DocumentService is missing, as RAG will fail
+        if not self.document_service:
+            logger.warning("ChatService initialized without a DocumentService. RAG functionalities will fail.")
         
     async def get_conversation(self, db: AsyncSession, conversation_id: uuid.UUID, user_id: uuid.UUID):
         """Get a conversation by ID"""
@@ -133,18 +150,17 @@ class ChatService:
             else:
                 messages = [{"role": "user", "content": message}]
             
-            # Configure parameters for the API
-            chat_params = {
-                "model": model or self.default_model,
-                "messages": messages,
-                "temperature": temperature,
-            }
+            # Check if LLM client is available
+            if not self.llm_client:
+                raise RuntimeError("ChatService is not configured with an LLM client.")
             
-            # Call the OpenAI API
-            response = await self.client.chat.completions.create(**chat_params)
-            
-            # Extract response
-            assistant_message_content = response.choices[0].message.content
+            # Call the LLM client via the interface
+            assistant_message_content = await self.llm_client.generate_chat_completion(
+                messages=messages,
+                model=model or self.default_model,
+                temperature=temperature,
+                stream=False # Not streaming here
+            )
             
             # Save assistant response
             assistant_message = await self.add_message(
@@ -170,16 +186,17 @@ class ChatService:
         Generate a streaming response using the OpenAI API
         """
         try:
-            # Configure parameters for the API
-            chat_params = {
-                "model": model or self.default_model,
-                "messages": messages,
-                "temperature": temperature,
-                "stream": True,  # Activate streaming
-            }
-            
-            # Call the OpenAI API with streaming
-            return await self.client.chat.completions.create(**chat_params)
+            # Check if LLM client is available
+            if not self.llm_client:
+                raise RuntimeError("ChatService is not configured with an LLM client.")
+
+            # Call the LLM client via the interface with stream=True
+            return self.llm_client.generate_chat_completion(
+                messages=messages,
+                model=model or self.default_model,
+                temperature=temperature,
+                stream=True
+            )
             
         except Exception as e:
             print(f"Error generating streaming response: {str(e)}")
@@ -196,11 +213,16 @@ class ChatService:
         Generate a response using RAG
         """
         try:
+            # Ensure required services are available
+            if not self.document_service:
+                raise RuntimeError("DocumentService is not available in ChatService for RAG.")
+            if not self.llm_client:
+                raise RuntimeError("OpenAI client is not available in ChatService for RAG.")
+
             # Use DocumentService for semantic search
-            doc_service = DocumentService()
-            
+            # Use the injected DocumentService instance
             # Search relevant documents
-            similar_docs = await doc_service.rag_search(
+            similar_docs = await self.document_service.rag_search(
                 db=db, 
                 query=query, 
                 user_id=user_id,
@@ -243,25 +265,16 @@ class ChatService:
             context = "\n\n".join(context_parts)
             
             # Generate response
-            response = await self.client.chat.completions.create(
-                model="gpt-4-turbo-preview",
+            response = await self.llm_client.generate_chat_completion(
+                model= self.default_model, # Use default model for RAG response generation for now
                 messages=[
-                    {
-                        "role": "system", 
-                        "content": "You are an expert assistant that answers questions based on provided documents. "
-                                  "Use only the information from the documents to answer. "
-                                  "If the information is not sufficient, indicate it clearly."
-                    },
-                    {
-                        "role": "user", 
-                        "content": f"Based on the following documents:\n\n{context}\n\n"
-                                  f"Answer this question: {query}"
-                    }
+                    {"role": "system", "content": f"Responde la pregunta del usuario basándote únicamente en el siguiente contexto:\n\n{context}\n\nNo añadas información que no esté en el contexto. Si la respuesta no está en el contexto, indica que no puedes responder con la información proporcionada."},
+                    {"role": "user", "content": query}
                 ],
-                temperature=0.7
+                temperature=0.3 # Lower temperature for more factual response
             )
             
-            answer = response.choices[0].message.content
+            answer = response
             
             # If there is a conversation_id, save the exchange
             if conversation_id:
@@ -306,3 +319,61 @@ class ChatService:
         db.add(system_message)
         
         await db.commit()
+
+    async def stream_chat_response_full(self, db: AsyncSession, user: User, chat_request: Any):
+        """Handles the full streaming chat logic including conversation and message management."""
+
+        conversation_id = chat_request.conversation_id
+        conversation = None
+        
+        # 1. Get or Create Conversation
+        if conversation_id:
+            conversation = await self.get_conversation(db, conversation_id, user.id)
+            if not conversation:
+                 # Raise an error the endpoint can catch
+                 raise ValueError(f"Conversation {conversation_id} not found or access denied.")
+        else:
+            title = chat_request.content[:30] + "..." if len(chat_request.content) > 30 else chat_request.content
+            conversation = await self.create_conversation(db, user.id, title)
+            conversation_id = conversation.id
+            logger.info(f"Created new conversation {conversation_id} for stream.")
+
+        # 2. Save User Message
+        await self.add_message(db, conversation_id, chat_request.content, "user")
+
+        # 3. Get Message History
+        db_messages = await self.get_conversation_messages(db, conversation_id)
+        # TODO: Add system prompt if needed
+        history = [{"role": msg.role, "content": msg.content} for msg in db_messages]
+        
+        # 4. Generate stream from AI
+        try:
+            stream = await self.generate_stream_response(
+                messages=history,
+                model=chat_request.model,
+                temperature=chat_request.temperature
+            )
+        except Exception as ai_error:
+             logger.error(f"Error calling OpenAI stream API: {ai_error}")
+             # Yield an error message chunk or raise exception
+             yield json.dumps({"error": "Failed to get response from AI model."})
+             return # Stop generation
+
+        # 5. Stream response chunks and collect full response
+        full_assistant_response = ""
+        async for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                full_assistant_response += content
+                # Yield chunk in desired format (e.g., JSON string)
+                yield json.dumps({"content": content, "conversation_id": str(conversation_id)}) + "\n"
+        
+        # Add a final newline or marker if needed by client
+        # yield "\n"
+
+        # 6. Save Full Assistant Message (after stream is complete)
+        if full_assistant_response:
+             await self.add_message(db, conversation_id, full_assistant_response, "assistant")
+             logger.info(f"Saved full assistant response to conversation {conversation_id}")
+        else:
+             logger.warning(f"No content received from assistant stream for conversation {conversation_id}")

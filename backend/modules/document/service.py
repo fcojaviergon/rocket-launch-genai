@@ -15,7 +15,11 @@ from sqlalchemy.sql import text
 from sqlalchemy.sql.expression import bindparam
 from sqlalchemy.orm import selectinload
 from sqlalchemy.future import select
+import asyncio
+import aiofiles
 
+# Import the LLM interface
+from core.llm_interface import LLMClientInterface
 from database.models.document import Document, DocumentEmbedding
 from schemas.document import DocumentCreate, DocumentUpdate
 from core.config import settings
@@ -30,6 +34,19 @@ load_dotenv()
 os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
 
 class DocumentService:
+    def __init__(self, llm_client: Optional[LLMClientInterface] = None):
+        """
+        Initialize DocumentService.
+        
+        Args:
+            llm_client: An optional pre-initialized client implementing LLMClientInterface.
+        """
+        self.llm_client = llm_client # Store the generic client
+        self.default_embedding_model = "text-embedding-3-small"
+        
+        if not self.llm_client:
+             logger.warning("DocumentService initialized without an OpenAI client. Embedding generation will fail.")
+
     async def create_document(
         self,
         db: AsyncSession,
@@ -65,9 +82,16 @@ class DocumentService:
         if isinstance(content, str):
             content = content.encode('utf-8')
         
-        # Save the file physically
-        with open(file_path, "wb") as f:
-            f.write(content)
+        # Save the file physically (async)
+        try:
+            async with aiofiles.open(file_path, "wb") as f:
+                await f.write(content)
+            logger.info(f"Successfully saved document file to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to save document file to {file_path}: {e}", exc_info=True)
+            # Decide if we should raise an error or continue without the file
+            # For now, let's raise to signal the failure clearly
+            raise IOError(f"Could not write document file to storage: {e}") from e
             
         # For binary files like PDF, only save metadata, not the content
         file_size = len(content)
@@ -124,6 +148,140 @@ class DocumentService:
             )
         )
         return result.scalar_one_or_none()
+    
+    async def get_document_with_details(self, db: AsyncSession, document_id: UUID) -> Optional[Document]:
+        """
+        Get a document by its ID, eagerly loading relationships needed for detailed views.
+
+        Args:
+            db: Asynchronous database session
+            document_id: ID of the document to get
+
+        Returns:
+            Optional[Document]: Document found with details, or None
+        """
+        # Import PipelineExecution here if not already imported globally or locally
+        from database.models.pipeline import PipelineExecution, Pipeline
+
+        # Define the query with eager loading options
+        query = (
+            select(Document)
+            .filter(Document.id == document_id)
+            .options(
+                selectinload(Document.embeddings), # Eager load embeddings
+                selectinload(Document.processing_results), # Eager load processing results
+                selectinload(Document.pipeline_executions).options( # Eager load executions...
+                    selectinload(PipelineExecution.pipeline) # ...and their related pipeline
+                )
+            )
+        )
+
+        # Execute the query
+        result = await db.execute(query)
+
+        # Return the single result or None
+        document = result.scalar_one_or_none()
+
+        # Potentially synthesize processing_results here if needed as part of the service logic
+        # Or leave it to the schema/API layer if preferred
+        if document:
+             # --- Synthesize processing_results from latest pipeline execution if needed ---
+             if (not document.processing_results or len(document.processing_results) == 0) and document.pipeline_executions:
+                 
+                 # Create dictionaries from execution objects for easier processing
+                 executions_data = []
+                 for execution in document.pipeline_executions:
+                      pipeline_name = execution.pipeline.name if execution.pipeline else "Unknown"
+                      executions_data.append({
+                         "id": execution.id,
+                         "pipeline_id": execution.pipeline_id,
+                         "document_id": execution.document_id,
+                         "user_id": execution.user_id,
+                         "status": execution.status.value if hasattr(execution.status, 'value') else str(execution.status),
+                         "started_at": execution.started_at,
+                         "completed_at": execution.completed_at,
+                         "created_at": execution.created_at,
+                         "updated_at": execution.updated_at,
+                         "pipeline_name": pipeline_name,
+                         "results": execution.results, # Keep results as they are (likely dict)
+                         "parameters": execution.parameters,
+                         "error_message": execution.error_message
+                     })
+
+                 completed_executions = [exec_dict for exec_dict in executions_data 
+                                          if exec_dict["status"] == "completed" and exec_dict.get("results")]
+
+                 if completed_executions:
+                     latest_execution = max(completed_executions, key=lambda x: x["completed_at"] if x["completed_at"] else x["created_at"])
+                     
+                     if latest_execution.get("results"):
+                         # We need a ProcessingResult object or something compatible with the schema
+                         # Let's assume we need to construct a dictionary matching ProcessingResultResponse
+                         # Import necessary types/models if needed
+                         import uuid # Ensure uuid is imported
+                         import json # Ensure json is imported
+                         # DocumentProcessingResult ORM class is not needed here as we create a dict
+
+                         result_data = latest_execution.get("results") or {}
+                         summary = None
+                         keywords = None
+                         token_count = None
+                         process_metadata = {}
+
+                         if isinstance(result_data.get("summary"), dict):
+                             summary = result_data["summary"].get("summary")
+                             process_metadata["summary_info"] = result_data["summary"]
+                         elif isinstance(result_data.get("summary"), str):
+                             summary = result_data["summary"]
+                         
+                         if isinstance(result_data.get("keywords"), list):
+                             keywords = result_data["keywords"]
+
+                         if "tokens_used" in result_data:
+                             token_count = result_data.get("tokens_used")
+
+                         for key, value in result_data.items():
+                             if key not in ["summary", "keywords", "tokens_used"] and value is not None:
+                                 try:
+                                     json.dumps(value)
+                                     process_metadata[key] = value
+                                 except TypeError:
+                                     process_metadata[key] = str(value)
+
+                         # IMPORTANT: We need to create an object that matches the expected type 
+                         # for the 'processing_results' relationship in the Document model.
+                         # If it expects ProcessingResult ORM objects, we might need to create one.
+                         # If the schema just expects dicts, creating a dict is fine.
+                         # Let's assume for now we are creating a dict structure similar to the schema.
+                         # This might need adjustment based on the actual ORM relationship type. 
+                         synthesized_result = {
+                              # "id": uuid.uuid4(), # ORM usually handles ID generation 
+                              "document_id": document.id,
+                              "pipeline_name": latest_execution["pipeline_name"],
+                              "summary": summary,
+                              "keywords": keywords or [],
+                              "token_count": token_count,
+                              "process_metadata": process_metadata,
+                              # Timestamps might need conversion if expected as datetime objects
+                              "created_at": latest_execution["completed_at"] or latest_execution["created_at"],
+                              "updated_at": latest_execution["updated_at"]
+                         }
+                         
+                         # If the relationship expects ORM objects:
+                         # temp_processing_result = ProcessingResult(**synthesized_result)
+                         # document.processing_results = [temp_processing_result] 
+                         
+                         # If the schema/relationship can handle dicts directly (less common for ORM relationships):
+                         # We might need to adjust how this is assigned based on DocumentResponse schema definition
+                         document.processing_results = [synthesized_result] # Assign list with synthesized dict
+                         logger.info(f"Synthesized processing_results for document {document_id} from pipeline execution.")
+             # -----------------------------------------------------------------------------
+
+             logger.debug(f"Retrieved document {document_id} with details.")
+             # Example: Synthesize logic could go here or be called from here
+             # document = self._synthesize_processing_results(document)
+
+        return document
     
     async def get_user_documents(
         self,
@@ -208,8 +366,22 @@ class DocumentService:
         if not document:
             return False
         
+        file_path_to_delete = Path(document.file_path) # Store path before deleting record
+        
         await db.delete(document)
         await db.commit()
+        
+        # Attempt to delete the physical file after successful DB deletion
+        try:
+            if file_path_to_delete.exists() and file_path_to_delete.is_file():
+                os.remove(file_path_to_delete)
+                logger.info(f"Successfully deleted physical file: {file_path_to_delete}")
+            else:
+                logger.warning(f"Physical file not found or is not a file, skipping deletion: {file_path_to_delete}")
+        except OSError as e:
+            logger.error(f"Error deleting physical file {file_path_to_delete}: {e}", exc_info=True)
+            # Do not re-raise; the primary goal (DB deletion) succeeded.
+        
         return True
     
     async def update_document_metadata(
@@ -314,7 +486,8 @@ class DocumentService:
         model: str = "text-embedding-3-small",
         limit: int = 5,
         min_similarity: float = 0.7,
-        user_id: Optional[UUID] = None
+        user_id: Optional[UUID] = None,
+        document_id: Optional[UUID] = None
     ) -> List[Dict[str, Any]]:
         """
         Search similar documents to an embedding vector
@@ -326,6 +499,7 @@ class DocumentService:
             limit: Maximum number of results
             min_similarity: Minimum similarity to consider a result (0-1)
             user_id: ID of the owner user (to filter by user)
+            document_id: Optional ID of a specific document to search within
             
         Returns:
             List[Dict[str, Any]]: List of similar documents with their score
@@ -371,6 +545,11 @@ class DocumentService:
             if user_id:
                 sql = text(sql.text + " AND documents.user_id = :user_id")
                 params["user_id"] = user_id
+            
+            # Add document filter if specified
+            if document_id:
+                sql = text(sql.text + " AND documents.id = :document_id")
+                params["document_id"] = document_id
             
             # Add sorting and limit
             sql = text(sql.text + """
@@ -441,35 +620,30 @@ class DocumentService:
         Returns:
             List[float]: Embedding vector
         """
-        api_key = settings.OPENAI_API_KEY
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY is not configured in the environment variables")
-        
+        if not self.llm_client:
+             logger.error("LLM client not available in DocumentService.")
+             raise RuntimeError("LLM client is not configured for DocumentService.")
+
+        effective_model = model or self.default_embedding_model
+        logger.debug(f"Generating query embedding using model: {effective_model}")
+
         try:
-            # Create an AsyncClient without proxies
-            http_client = httpx.AsyncClient()
-            
-            # Initialize AsyncOpenAI with the HTTP client
-            client = AsyncOpenAI(
-                api_key=api_key,
-                http_client=http_client
+            # Use the interface method
+            embeddings_list = await self.llm_client.generate_embeddings(
+                texts=[query_text], # Interface expects a list
+                model=effective_model,
             )
             
-            response = await client.embeddings.create(
-                input=query_text,
-                model=model
-            )
-            
-            # Extract the embedding vector
-            embedding_vector = response.data[0].embedding
-            
-            # Close the HTTP client
-            await http_client.aclose()
-            
-            return embedding_vector
+            if not embeddings_list or not embeddings_list[0]:
+                raise ValueError("LLM client did not return valid embeddings.")
+
+            embedding = embeddings_list[0] # Get the first (and only) embedding
+            logger.debug(f"Successfully generated query embedding. Dimension: {len(embedding)}")
+            return embedding
         except Exception as e:
-            logger.error(f"Error generating embedding for query: {str(e)}")
-            raise
+            logger.error(f"Error generating query embedding: {e}", exc_info=True)
+            # Re-raise a more specific or generic error
+            raise RuntimeError(f"Failed to generate query embedding via LLM client: {e}") from e
     
     async def rag_search(
         self,
@@ -527,92 +701,35 @@ class DocumentService:
         document_id: UUID
     ) -> List[Dict[str, Any]]:
         """
-        Search chunks of documents based on semantic similarity using pgvector.
+        Search chunks within a specific document based on semantic similarity using pgvector.
+        Reuses the core search logic but targets a single document.
         """
-        logger.info(f"Starting raw search with query='{query}', model='{model}', limit={limit}, min_similarity={min_similarity}")
-        api_key = settings.OPENAI_API_KEY
+        logger.info(f"Starting raw search within document {document_id} with query='{query}', model='{model}', limit={limit}, min_similarity={min_similarity}")
         try:
-            # 1. Generate embedding for the query
-            try:
-                http_client = httpx.AsyncClient()
-            
-                # Initialize AsyncOpenAI with the HTTP client
-                client = AsyncOpenAI(
-                    api_key=api_key,
-                    http_client=http_client
-                )
+            # 1. Generate embedding for the query using the service method
+            query_embedding = await self.generate_query_embedding(query, model)
+            logger.info(f"Embedding generated with {len(query_embedding)} dimensions")
 
-                response = await client.embeddings.create(
-                    input=query,
-                    model=model,
-                )
-                query_embedding = response.data[0].embedding
-                logger.info(f"Embedding generated with {len(query_embedding)} dimensions")
+            # 2. Call the extended search_similar_documents method
+            search_results = await self.search_similar_documents(
+                db=db,
+                query_embedding=query_embedding,
+                model=model,
+                limit=limit,
+                min_similarity=min_similarity,
+                user_id=user_id, # Pass user_id for potential filtering within search_similar_documents
+                document_id=document_id # Pass the specific document_id
+            )
 
-                # --- IMPORTANT: Close the httpx client explicitly ---
-                await http_client.aclose()
-                # -----------------------------------------------------
-
-            except Exception as e:
-                 logger.error(f"Error generating embedding for query '{query}' using model '{model}': {e}", exc_info=True)
-                 # If httpx was created, try to close it before re-raising
-                 if 'httpClient' in locals() and hasattr(http_client, 'aclose'):
-                     try:
-                         await http_client.aclose()
-                     except Exception as close_err:
-                         logger.error(f"Error closing httpClient after embedding failure: {close_err}")
-                 raise ValueError(f"Could not generate embedding for query: {e}") from e
-
-            # Convert embedding to string format pgvector '[f1,f2,...]'
-            embedding_vector_string = "[" + ",".join(map(str, query_embedding)) + "]"
-
-            # 2. Prepare the SQL query (no changes from the previous correction)
-            query_sql = text("""
-                SELECT
-                    de.document_id,
-                    d.title as document_title,
-                    de.chunk_text,
-                    de.chunk_index,
-                    (1 - (de.embedding <=> :embedding_vector)) as similarity
-                FROM
-                    document_embeddings de
-                JOIN
-                    documents d ON de.document_id = d.id
-                WHERE
-                    de.model = :model
-                    AND d.user_id = :user_id
-                    AND (1 - (de.embedding <=> :embedding_vector)) >= :min_similarity
-                    AND de.document_id = :document_id
-                ORDER BY
-                    similarity DESC
-                LIMIT :limit
-            """)
-
-            # 3. Create the parameters dictionary (no changes)
-            params_dict = {
-                "embedding_vector": embedding_vector_string,
-                "model": model,
-                "user_id": user_id,
-                "min_similarity": min_similarity,
-                "limit": limit,
-                "document_id": document_id
-            }
-            safe_params_log = {k: (v[:80] + '...' if k == 'embedding_vector' else v) for k, v in params_dict.items()}
-            logger.info(f"Executing semantic search query")
-
-            # 4. Execute the query (no changes)
-            result = await db.execute(query_sql, params_dict)
-
-            # 5. Get the results (no changes)
-            search_results_raw = result.mappings().all()
-            logger.info(f"Raw search found {len(search_results_raw)} results.")
-
-            # 6. Convert to a list of dictionaries (no changes)
-            search_results = [dict(row) for row in search_results_raw]
+            logger.info(f"Raw search found {len(search_results)} results within document {document_id}.")
 
             return search_results
 
+        except ValueError as ve:
+            # Specific handling for embedding generation errors
+            logger.error(f"Error generating embedding for raw search query '{query}': {ve}", exc_info=True)
+            raise ValueError(f"Could not generate embedding for query: {ve}") from ve
         except Exception as e:
-            logger.error(f"Fatal error during raw document search: {str(e)}", exc_info=True)
+            logger.error(f"Fatal error during raw document search within document {document_id}: {str(e)}", exc_info=True)
             raise e # Re-raise to let the endpoint handle it
     

@@ -7,6 +7,8 @@ from database.session import async_engine as engine, AsyncSessionLocal as Sessio
 # Import all models to ensure SQLAlchemy registers them
 from database.models import BaseModel, User, Document, DocumentEmbedding, DocumentProcessingResult, Conversation, Message, Pipeline
 from modules.auth.service import AuthService
+# Import settings
+from core.config import settings
 
 # Logging configuration
 logger = logging.getLogger(__name__)
@@ -20,14 +22,18 @@ async def create_tables(connection) -> None:
 async def create_admin_user(db: AsyncSession) -> User:
     """Create an admin user if it doesn't exist"""
     # Check if admin user already exists
-    query = select(User).where(User.email == "admin@example.com")
+    logger.info(f"Checking for admin user with email: {settings.INITIAL_ADMIN_EMAIL}")
+    query = select(User).where(User.email == settings.INITIAL_ADMIN_EMAIL)
     result = await db.execute(query)
     admin_user = result.scalars().first()
     
     if admin_user:
         # Check if admin user has the correct role
         if admin_user.role != "admin":
-            admin_user.role = "admin"
+            logger.warning(f"Existing user {settings.INITIAL_ADMIN_EMAIL} found, updating role to admin.")
+            admin_user.role = "admin" # Ensure role is admin
+            admin_user.is_superuser = True # Ensure superuser status
+            admin_user.is_active = True # Ensure active status
             await db.commit()
             logger.info("Admin role updated for existing user")
         else:
@@ -35,10 +41,15 @@ async def create_admin_user(db: AsyncSession) -> User:
         return admin_user
     
     # Create admin user
+    logger.info(f"Creating initial admin user: {settings.INITIAL_ADMIN_EMAIL}")
+    if not settings.INITIAL_ADMIN_PASSWORD:
+        logger.error("INITIAL_ADMIN_PASSWORD is not set in settings. Cannot create admin user.")
+        raise ValueError("Initial admin password must be set in environment variables.")
+
     auth_service = AuthService()
     admin_user = User(
-        email="admin@example.com",
-        hashed_password=auth_service.get_password_hash("admin123"),
+        email=settings.INITIAL_ADMIN_EMAIL,
+        hashed_password=auth_service.get_password_hash(settings.INITIAL_ADMIN_PASSWORD),
         full_name="Admin User",
         is_superuser=True,
         role="admin",

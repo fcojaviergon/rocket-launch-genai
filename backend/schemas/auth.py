@@ -56,3 +56,12 @@ class Token(BaseModel):
     refresh_token: str
     token_type: str
     user: dict
+
+
+class RefreshTokenRequest(BaseModel):
+    """Schema for refresh token request"""
+    refresh_token: str
+
+class UserResponseWithRole(UserResponse):
+    """Schema for user responses with role"""
+    role: str

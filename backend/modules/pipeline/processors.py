@@ -8,13 +8,17 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import re
-from openai import AsyncOpenAI 
 from core.config import settings
 import httpx 
 
+# Import the interface
+from core.llm_interface import LLMClientInterface, LLMMessage 
 
 import numpy as np
 from pathlib import Path
+import aiofiles
+import asyncio
+import json
 
 try:
 
@@ -41,58 +45,123 @@ logger = logging.getLogger(__name__)
 class BaseProcessor(ABC):
     """Base class for pipeline processors"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, llm_client: Optional[LLMClientInterface] = None):
         self.config = config or {}
         self.name = self.__class__.__name__
+        # Store the shared client if provided
+        self.llm_client = llm_client
         
     @abstractmethod
-    async def process(self, document_content: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def process(self, document: Document, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process a document and return the results
+        Process a document object and return the results
         
         Args:
-            document_content: Document content
+            document: The Document ORM object being processed.
             context: Contextual information and results of previous steps
             
         Returns:
-            Dict[str, Any]: Processing results
+            Dict[str, Any]: Processing results for this step
         """
         pass
 
 class TextExtractionProcessor(BaseProcessor):
-    """Extract text from documents"""
+    """Extract text from various document formats based on file path"""
     
-    async def process(self, document_content: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract and clean text from a document"""
-        try:
-            logger.info(f"TextExtractionProcessor processing document, content length: {len(document_content) if document_content else 0}")
-            if not document_content or document_content.strip() == "":
-                logger.warning("Document content is empty or whitespace")
-                document_content = "No content available"
+    async def process(self, document: Document, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract and clean text from the document's file"""
+        file_path_str = document.file_path
+        extracted_text = None
+        error_msg = None
+
+        if not file_path_str or not Path(file_path_str).exists():
+            logger.error(f"Document file not found or path missing for doc {document.id} at path: {file_path_str}")
+            error_msg = "Document file path missing or file not found."
+        else:
+            file_path = Path(file_path_str)
+            file_ext = file_path.suffix.lower()
+            logger.info(f"TextExtractionProcessor processing document {document.id} (type: {file_ext}) from path: {file_path}")
             
-            # If the document is already text, simply clean it
-            clean_text = self._clean_text(document_content)
+            try:
+                # Use async file reading and thread pool for sync libraries
+                loop = asyncio.get_running_loop()
+                
+                if file_ext == '.txt':
+                    try:
+                        async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            extracted_text = await f.read()
+                    except Exception as txt_err:
+                         error_msg = f"Error reading TXT file: {txt_err}"
+                         logger.error(error_msg, exc_info=True)
+
+                elif file_ext == '.pdf':
+                    if PdfReader:
+                        try:
+                            def read_pdf(): # Function to run in thread pool
+                                with open(file_path, 'rb') as f:
+                                    reader = PdfReader(f)
+                                    return '\n'.join([page.extract_text() for page in reader.pages if page.extract_text()])
+                            extracted_text = await loop.run_in_executor(None, read_pdf) # Run sync code in thread pool
+                        except Exception as pdf_err:
+                            error_msg = f"Error reading PDF file: {pdf_err}"
+                            logger.error(error_msg, exc_info=True)
+                    else:
+                        error_msg = "pypdf library not available for PDF extraction."
+                        logger.warning(error_msg)
+
+                elif file_ext in ['.docx']:
+                    if docx:
+                        try:
+                            def read_docx(): # Function to run in thread pool
+                                doc = docx.Document(file_path)
+                                return '\n'.join([para.text for para in doc.paragraphs if para.text])
+                            extracted_text = await loop.run_in_executor(None, read_docx) # Run sync code in thread pool
+                        except Exception as docx_err:
+                             error_msg = f"Error reading DOCX file: {docx_err}"
+                             logger.error(error_msg, exc_info=True)
+                    else:
+                        error_msg = "python-docx library not available for DOCX extraction."
+                        logger.warning(error_msg)
+                else:
+                    # Fallback: Maybe content is already in document.content?
+                    if document.content and isinstance(document.content, str):
+                         logger.warning(f"Unsupported file type '{file_ext}' for extraction, using existing document.content")
+                         extracted_text = document.content
+                    else:
+                        error_msg = f"Unsupported file type for text extraction: {file_ext}"
+                        logger.error(error_msg)
             
-            # Calculate basic statistics
-            word_count = len(clean_text.split())
-            char_count = len(clean_text)
+            except Exception as e:
+                logger.error(f"Generic error during text extraction for {document.id}: {e}", exc_info=True)
+                error_msg = f"Generic extraction error: {e}"
+
+        # Handle results
+        if error_msg:
+             logger.error(f"Failed text extraction for doc {document.id}: {error_msg}")
+             return {
+                 "error": error_msg,
+                 "processor": self.name,
+                 "timestamp": datetime.utcnow().isoformat()
+             }
+        elif extracted_text is None:
+            logger.warning(f"No text could be extracted for doc {document.id} (path: {file_path_str}).")
+            extracted_text = "" # Ensure it's a string
             
-            #logger.info(f"Text extracted successfully: {word_count} words, {char_count} chars")
-            
-            return {
-                "extracted_text": clean_text,
-                "word_count": word_count,
-                "char_count": char_count,
-                "processor": self.name,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error in {self.name}: {e}", exc_info=True)
-            return {
-                "error": str(e),
-                "processor": self.name,
-                "timestamp": datetime.utcnow().isoformat()
-            }
+        # Clean the extracted text
+        clean_text = self._clean_text(extracted_text)
+        word_count = len(clean_text.split())
+        char_count = len(clean_text)
+        
+        logger.info(f"Text extracted successfully for doc {document.id}: {word_count} words, {char_count} chars")
+        
+        return {
+            # Key name changed to reflect it might be the primary content source now
+            "document_content": clean_text, 
+            "word_count": word_count,
+            "char_count": char_count,
+            "processor": self.name,
+            "timestamp": datetime.utcnow().isoformat()
+        }
     
     def _clean_text(self, text: str) -> str:
         """Clean the text by removing special characters, multiple spaces, etc."""
@@ -107,44 +176,11 @@ class TextExtractionProcessor(BaseProcessor):
 class SummarizerProcessor(BaseProcessor):
     """Generate text summaries using language models"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, llm_client: Optional[LLMClientInterface] = None):
         super().__init__(config)
         
-        # Obtener API key con verificación
-        api_key = self.config.get("api_key", settings.OPENAI_API_KEY)
-        
-        # Validar que la API key no esté vacía
-        if not api_key or api_key.strip() == "" or api_key == "None":
-            logger.error(f"{self.name}: OPENAI_API_KEY no está definida o está vacía")
-            logger.debug(f"API key value: '{api_key}'")
-            # Intentar obtener directamente de las variables de entorno
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if not api_key or api_key.strip() == "":
-                logger.error(f"{self.name}: No se pudo obtener OPENAI_API_KEY del entorno")
-                self.client = None
-                return
-            else:
-                logger.info(f"{self.name}: Se obtuvo OPENAI_API_KEY del entorno directamente")
-        
-        # --- Create httpx client explicitly WITHOUT proxies ---
-        try:
-            logger.debug(f"[{self.name}] Creating default httpx.AsyncClient()")
-            http_client = httpx.AsyncClient() # Without explicit arguments
-            logger.debug(f"[{self.name}] httpx.AsyncClient() created successfully.")
-
-            # Parameters for AsyncOpenAI, including the http_client
-            client_params = {
-                "api_key": api_key,
-                "http_client": http_client # Pass the default client
-            }
-
-            self.client = AsyncOpenAI(**client_params)
-            logger.info(f"AsyncOpenAI initialized for {self.name} with default http_client (chat_service style)")
-
-        except Exception as e:
-            # Log the specific error during initialization
-            logger.error(f"Error initializing AsyncOpenAI or httpx.AsyncClient in {self.name}: {e}", exc_info=True)
-            self.client = None # Ensure self.client is None if it fails
+        # Store the passed client
+        self.llm_client = llm_client
         
         self.model = self.config.get("model", "gpt-3.5-turbo")
         self.max_chunk_tokens = self.config.get("max_chunk_tokens", 12000)  # Tamaño máximo por chunk
@@ -225,7 +261,11 @@ class SummarizerProcessor(BaseProcessor):
             str: Resumen del texto
         """
         try:
-            response = await self.client.chat.completions.create(
+            if not self.llm_client:
+                raise RuntimeError(f"{self.name}: OpenAI client is not available.")
+
+            # Use the interface method
+            summary = await self.llm_client.generate_chat_completion(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "Resumir el siguiente texto en un párrafo conciso"},
@@ -235,7 +275,7 @@ class SummarizerProcessor(BaseProcessor):
                 temperature=0.3
             )
             
-            return response.choices[0].message.content.strip()
+            return summary
         except Exception as e:
             logger.error(f"Error al resumir chunk: {str(e)}")
             return f"Error de resumen: {str(e)}"
@@ -250,13 +290,17 @@ class SummarizerProcessor(BaseProcessor):
         Returns:
             str: Resumen final combinado
         """
+        if not self.llm_client:
+            raise RuntimeError(f"{self.name}: OpenAI client is not available for combining summaries.")
+
         if len(summaries) == 1:
             return summaries[0]
         
         combined_text = "\n\n".join([f"Sección {i+1}: {summary}" for i, summary in enumerate(summaries)])
         
         try:
-            response = await self.client.chat.completions.create(
+            # Use the interface method
+            final_summary = await self.llm_client.generate_chat_completion(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "Combina estos resúmenes parciales en un único resumen coherente"},
@@ -266,92 +310,48 @@ class SummarizerProcessor(BaseProcessor):
                 temperature=0.3
             )
             
-            return response.choices[0].message.content.strip()
+            return final_summary
         except Exception as e:
             logger.error(f"Error al combinar resúmenes: {str(e)}")
             return "\n\n".join(["RESUMEN FINAL (no se pudo combinar automáticamente):"] + summaries)
     
-    async def process(self, document_content: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate a summary of the text using OpenAI with chunking para documentos grandes"""
-        if not self.client:
-             logger.error(f"{self.name}: AsyncOpenAI client not initialized")
-             return {
-                 "error": f"AsyncOpenAI client not initialized in {self.name}",
-                 "processor": self.name,
-                 "timestamp": datetime.utcnow().isoformat()
-             }
+    async def process(self, document: Document, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Process the document content to generate a summary"""
         try:
-            text_to_summarize = context.get("extracted_text", document_content)
-            if not text_to_summarize or text_to_summarize.strip() == "":
-                logger.warning(f"{self.name}: No text to summarize")
-                return {
-                    "error": "No text to summarize",
-                    "processor": self.name,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
+            # Get text from context (preferred) or document.content
+            document_content = context.get("document_content", document.content or "")
+            if not document_content:
+                 logger.warning(f"No document content found in context or document for summarization.")
+                 return {"summary": "", "error": "No content to summarize"}
+
+            logger.info(f"SummarizerProcessor processing document {document.id}, content length: {len(document_content)}")
+
+            # Divide text into chunks
+            chunks = self._chunk_text(document_content, self.max_chunk_tokens)
+
+            if not chunks:
+                 logger.warning(f"Text could not be chunked for summarization (content likely empty).")
+                 return {"summary": "", "error": "Content could not be chunked"}
+
+            # Process each chunk in parallel
+            summaries = await asyncio.gather(*[self._summarize_chunk(chunk) for chunk in chunks])
             
-            # Dividir el texto en chunks si es necesario
-            chunks = self._chunk_text(text_to_summarize, self.max_chunk_tokens)
-            total_chunks = len(chunks)
-            logger.info(f"{self.name}: Procesando documento en {total_chunks} chunks")
+            # Combine summaries
+            final_summary = await self._combine_summaries(summaries)
             
-            if total_chunks == 1:
-                # Si solo hay un chunk, resumir directamente
-                logger.info(f"{self.name}: Resumiendo texto directamente (un solo chunk)")
-                try:
-                    response = await self.client.chat.completions.create(
-                        model=self.model,
-                        messages=[
-                            {"role": "system", "content": "Resume el siguiente texto en un párrafo conciso"},
-                            {"role": "user", "content": chunks[0]}
-                        ],
-                        max_tokens=1000,
-                        temperature=0.3
-                    )
-                    
-                    summary = response.choices[0].message.content.strip()
-                    tokens_used = response.usage.total_tokens if hasattr(response, 'usage') and response.usage else 0
-                    
-                    logger.info(f"{self.name}: Summary generated successfully, {tokens_used} tokens used")
-                    
-                    return {
-                        "summary": summary,
-                        "tokens_used": tokens_used,
-                        "processor": self.name,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                except Exception as e:
-                    logger.error(f"Error in direct summarization: {str(e)}")
-                    return {
-                        "error": str(e),
-                        "processor": self.name,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-            else:
-                # Resumir cada chunk por separado
-                logger.info(f"{self.name}: Procesando resumen en {total_chunks} partes")
-                chunk_summaries = []
-                total_tokens = 0
-                
-                for i, chunk in enumerate(chunks):
-                    logger.info(f"{self.name}: Resumiendo chunk {i+1}/{total_chunks}")
-                    chunk_summary = await self._summarize_chunk(chunk)
-                    chunk_summaries.append(chunk_summary)
-                    
-                # Combinar los resúmenes en uno solo
-                logger.info(f"{self.name}: Combinando {len(chunk_summaries)} resúmenes parciales")
-                final_summary = await self._combine_summaries(chunk_summaries)
-                
-                logger.info(f"{self.name}: Resumen final generado exitosamente a partir de {total_chunks} chunks")
-                
-                return {
-                    "summary": final_summary,
-                    "chunks_processed": total_chunks,
-                    "processor": self.name,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
+            logger.info(f"Summary generated for document {document.id}: {len(final_summary)} chars")
+
+            # Calculate tokens used (approximation or get from LLM response if available)
+            tokens_used = context.get("total_tokens_used", 0) # Placeholder
+            
+            return {
+                "summary": final_summary,
+                "tokens_used": tokens_used, # Add token count
+                "processor": self.name,
+                "timestamp": datetime.utcnow().isoformat()
+            }
         except Exception as e:
-            logger.error(f"Error in {self.name} during process: {str(e)}", exc_info=True)
+            logger.error(f"Error in {self.name} for doc {document.id}: {e}", exc_info=True)
             return {
                 "error": str(e),
                 "processor": self.name,
@@ -359,80 +359,67 @@ class SummarizerProcessor(BaseProcessor):
             }
 
 class KeywordExtractionProcessor(BaseProcessor):
-    """Extract keywords from text"""
+    """Extract keywords using language models"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, llm_client: Optional[LLMClientInterface] = None):
         super().__init__(config)
         
-        # Obtener API key con verificación
-        api_key = self.config.get("api_key", settings.OPENAI_API_KEY)
+        # Store the passed client
+        self.llm_client = llm_client
         
-        # Validar que la API key no esté vacía
-        if not api_key or api_key.strip() == "" or api_key == "None":
-            logger.error(f"{self.name}: OPENAI_API_KEY no está definida o está vacía")
-            logger.debug(f"API key value: '{api_key}'")
-            # Intentar obtener directamente de las variables de entorno
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if not api_key or api_key.strip() == "":
-                logger.error(f"{self.name}: No se pudo obtener OPENAI_API_KEY del entorno")
-                self.client = None
-                return
-            else:
-                logger.info(f"{self.name}: Se obtuvo OPENAI_API_KEY del entorno directamente")
-        
-        # --- Create httpx client explicitly WITHOUT proxies ---
-        try:
-            logger.debug(f"[{self.name}] Creating default httpx.AsyncClient()")
-            http_client = httpx.AsyncClient() # Simple
-            logger.debug(f"[{self.name}] httpx.AsyncClient() created successfully.")
-            client_params = {"api_key": api_key, "http_client": http_client}
-
-            self.client = AsyncOpenAI(**client_params)
-            logger.info(f"AsyncOpenAI initialized for {self.name} with default http_client (chat_service style)")
-        except Exception as e:
-            logger.error(f"Error initializing AsyncOpenAI or httpx.AsyncClient in {self.name}: {e}", exc_info=True)
-            self.client = None
-            
         self.model = self.config.get("model", "gpt-3.5-turbo")
-        self.num_keywords = self.config.get("num_keywords", 10)
+        self.max_keywords = self.config.get("max_keywords", 10)
+        self.max_chars_context = self.config.get("max_chars_context", 4000)
     
-    async def process(self, document_content: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract keywords from text using OpenAI"""
-        if not self.client:
-             return {
-                 "error": f"AsyncOpenAI client not initialized in {self.name}",
-                 "processor": self.name,
-                 "timestamp": datetime.utcnow().isoformat()
-             }
+    async def process(self, document: Document, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Process the document content to extract keywords"""
         try:
-            text_to_analyze = context.get("extracted_text", document_content)
-            max_length = min(len(text_to_analyze), 4000)
-            truncated_text = text_to_analyze[:max_length]
-            
-            # Asynchronous call with await
-            response = await self.client.chat.completions.create(
+            # Get text from context (preferred) or document.content
+            document_content = context.get("document_content", document.content or "")
+            if not document_content:
+                 logger.warning(f"No document content found in context or document for keyword extraction.")
+                 return {"keywords": [], "error": "No content for keyword extraction"}
+
+            logger.info(f"KeywordExtractionProcessor processing document {document.id}")
+
+            if not self.llm_client:
+                raise RuntimeError(f"{self.name}: OpenAI client is not available.")
+
+            # Use the interface method
+            response_text = await self.llm_client.generate_chat_completion(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": f"Extract {self.num_keywords} keywords."},
-                    {"role": "user", "content": truncated_text}
+                    {"role": "system", "content": f"Extrae las {self.max_keywords} palabras clave o frases clave más importantes del siguiente texto. Devuelve solo una lista JSON de strings. Ejemplo: [\"palabra clave 1\", \"frase clave 2\"]"},
+                    {"role": "user", "content": document_content[:self.max_chars_context]}
                 ],
-                max_tokens=100,
-                temperature=0.3
+                max_tokens=self.max_keywords * 10, # Estimate tokens needed
+                temperature=0.2
             )
             
-            keywords_text = response.choices[0].message.content.strip()
-            # More robust handling if the response is not a comma-separated list
-            keywords = [k.strip() for k in keywords_text.split(',') if k.strip()]
-            tokens_used = response.usage.total_tokens if hasattr(response, 'usage') and response.usage else 0
+            # Parse the JSON response
+            try:
+                keywords = json.loads(response_text)
+                if not isinstance(keywords, list):
+                    raise ValueError("LLM did not return a JSON list.")
+                # Optionally validate content is strings
+                keywords = [str(kw) for kw in keywords][:self.max_keywords] # Ensure strings and limit count
+            except (json.JSONDecodeError, ValueError) as parse_error:
+                logger.warning(f"Failed to parse keyword list from LLM response: {parse_error}. Response: {response_text}")
+                # Fallback: try regex extraction? or return error?
+                keywords = [] # Return empty for now
+                # Consider adding the raw response to the error field?
             
+            logger.info(f"Keywords extracted for document {document.id}: {keywords}")
+            tokens_used = context.get("total_tokens_used", 0) # Placeholder
+
             return {
                 "keywords": keywords,
-                "tokens_used": tokens_used,
+                "tokens_used": tokens_used, # Add token count
                 "processor": self.name,
                 "timestamp": datetime.utcnow().isoformat()
             }
         except Exception as e:
-            logger.error(f"Error in {self.name} durante process: {str(e)}", exc_info=True)
+            logger.error(f"Error in {self.name} for doc {document.id}: {e}", exc_info=True)
             return {
                 "error": str(e),
                 "processor": self.name,
@@ -440,95 +427,64 @@ class KeywordExtractionProcessor(BaseProcessor):
             }
 
 class SentimentAnalysisProcessor(BaseProcessor):
-    """Analyze the sentiment of text"""
+    """Perform sentiment analysis using language models"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, llm_client: Optional[LLMClientInterface] = None):
         super().__init__(config)
         
-        # Obtener API key con verificación
-        api_key = self.config.get("api_key", settings.OPENAI_API_KEY)
-        
-        # Validar que la API key no esté vacía
-        if not api_key or api_key.strip() == "" or api_key == "None":
-            logger.error(f"{self.name}: OPENAI_API_KEY no está definida o está vacía")
-            logger.debug(f"API key value: '{api_key}'")
-            # Intentar obtener directamente de las variables de entorno
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if not api_key or api_key.strip() == "":
-                logger.error(f"{self.name}: No se pudo obtener OPENAI_API_KEY del entorno")
-                self.client = None
-                return
-            else:
-                logger.info(f"{self.name}: Se obtuvo OPENAI_API_KEY del entorno directamente")
-       
-        
-        # --- Create httpx client explicitly WITHOUT proxies ---
-        try:
-            logger.debug(f"[{self.name}] Creating default httpx.AsyncClient()")
-            http_client = httpx.AsyncClient() # Simple
-            logger.debug(f"[{self.name}] httpx.AsyncClient() created successfully.")
-            client_params = {"api_key": api_key, "http_client": http_client}
-      
-            self.client = AsyncOpenAI(**client_params)
-            logger.info(f"AsyncOpenAI initialized for {self.name} with default http_client (chat_service style)")
-        except Exception as e:
-            logger.error(f"Error initializing AsyncOpenAI or httpx.AsyncClient in {self.name}: {e}", exc_info=True)
-            self.client = None
+        # Store the passed client
+        self.llm_client = llm_client
         
         self.model = self.config.get("model", "gpt-3.5-turbo")
+        self.max_chars_context = self.config.get("max_chars_context", 4000)
     
-    async def process(self, document_content: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze the sentiment of text using OpenAI"""
-        if not self.client:
-             return {
-                 "error": f"AsyncOpenAI client not initialized in {self.name}",
-                 "processor": self.name,
-                 "timestamp": datetime.utcnow().isoformat()
-             }
+    async def process(self, document: Document, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Process document content for sentiment analysis"""
         try:
-            text_to_analyze = context.get("extracted_text", document_content)
-            max_length = min(len(text_to_analyze), 4000)
-            truncated_text = text_to_analyze[:max_length]
+            # Get text from context (preferred) or document.content
+            document_content = context.get("document_content", document.content or "")
+            if not document_content:
+                 logger.warning(f"No document content found in context or document for sentiment analysis.")
+                 return {"sentiment": "NEUTRAL", "polarity": 0.0, "error": "No content for sentiment analysis"}
+
+            logger.info(f"SentimentAnalysisProcessor processing document {document.id}")
+
+            if not self.llm_client:
+                 raise RuntimeError(f"{self.name}: OpenAI client is not available.")
             
-            # Asynchronous call with await
-            response = await self.client.chat.completions.create(
+            # Use the interface method
+            response_text = await self.llm_client.generate_chat_completion(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "Analyze sentiment (POSITIVE, NEGATIVE, NEUTRAL) and polarity (-1 to 1)."},
-                    {"role": "user", "content": truncated_text}
+                    {"role": "system", "content": "Clasifica el sentimiento del siguiente texto como POSITIVO, NEGATIVO o NEUTRAL. Responde solo con una de esas tres palabras."},
+                    {"role": "user", "content": document_content[:self.max_chars_context]}
                 ],
-                max_tokens=50,
-                temperature=0.3
+                max_tokens=10,
+                temperature=0.1
             )
             
-            sentiment_text = response.choices[0].message.content.strip()
+            sentiment = response_text.strip().upper()
+            if sentiment not in ["POSITIVO", "NEGATIVO", "NEUTRAL"]:
+                logger.warning(f"Unexpected sentiment response from LLM: {response_text}. Defaulting to NEUTRAL.")
+                sentiment = "NEUTRAL"
             
-            sentiment = "NEUTRAL"
-            polarity = 0.0
-            
-            sentiment_upper = sentiment_text.upper()
-            if "POSITIVE" in sentiment_upper:
-                sentiment = "POSITIVE"
-            elif "NEGATIVE" in sentiment_upper:
-                sentiment = "NEGATIVE"
-            
-            polarity_match = re.search(r'(-?\d+(\.\d+)?)', sentiment_text)
-            if polarity_match:
-                try:
-                    polarity = float(polarity_match.group(1))
-                    polarity = max(-1.0, min(1.0, polarity))
-                except ValueError:
-                    logger.warning(f"Could not convertir la polarity a float: {polarity_match.group(1)}")
-                    pass # Mantener 0.0 si falla la conversión
-            
+            # Polarity is not directly available from this simple classification
+            polarity = 0.0 
+            if sentiment == "POSITIVO": polarity = 0.5 # Assign arbitrary polarity
+            if sentiment == "NEGATIVO": polarity = -0.5
+
+            logger.info(f"Sentiment analysis for document {document.id}: {sentiment}")
+            tokens_used = context.get("total_tokens_used", 0) # Placeholder
+
             return {
                 "sentiment": sentiment,
                 "polarity": polarity,
+                "tokens_used": tokens_used, # Add token count
                 "processor": self.name,
                 "timestamp": datetime.utcnow().isoformat()
             }
         except Exception as e:
-            logger.error(f"Error in {self.name} durante process: {str(e)}", exc_info=True)
+            logger.error(f"Error in {self.name} for doc {document.id}: {e}", exc_info=True)
             return {
                 "error": str(e),
                 "processor": self.name,
@@ -536,222 +492,106 @@ class SentimentAnalysisProcessor(BaseProcessor):
             }
 
 class EmbeddingProcessor(BaseProcessor):
-    """Generate embeddings (vectors) of a document for semantic search"""
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """Initialize the embedding processor"""
-        super().__init__(config)
-        self.name = config.get("name", "embedding_processor")
-
-        self.model = config.get("model", "text-embedding-3-small")
-        self.chunk_size = config.get("chunk_size", 1000)
-        self.chunk_overlap = config.get("chunk_overlap", 200)
-        # The actual dimension will be given by OpenAI, so it is not necessary to configure it here unless you want to validate it.
-        # self.dimension = config.get("dimension", 1536)
-
-        # Obtener API key con verificación
-        api_key = self.config.get("api_key", settings.OPENAI_API_KEY)
-        
-        # Validar que la API key no esté vacía
-        if not api_key or api_key.strip() == "" or api_key == "None":
-            logger.error(f"{self.name}: OPENAI_API_KEY no está definida o está vacía")
-            logger.debug(f"API key value: '{api_key}'")
-            # Intentar obtener directamente de las variables de entorno
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if not api_key or api_key.strip() == "":
-                logger.error(f"{self.name}: No se pudo obtener OPENAI_API_KEY del entorno")
-                self.client = None
-                return
-            else:
-                logger.info(f"{self.name}: Se obtuvo OPENAI_API_KEY del entorno directamente")
-        
-        try:
-            # Use default httpx client (without explicit proxies)
-            http_client = httpx.AsyncClient()
-            self.client = AsyncOpenAI(api_key=api_key, http_client=http_client)
-            logger.info(f"AsyncOpenAI initialized for {self.name}")
-        except Exception as e:
-            logger.error(f"Error initializing AsyncOpenAI or httpx.AsyncClient in {self.name}: {str(e)}", exc_info=True)
-            self.client = None
-
-    def _extract_text_from_file(self, file_path_str: str) -> Optional[str]:
-        """Extract text from a file based on its extension."""
-        file_path = Path(file_path_str)
-        if not file_path.is_file():
-            logger.error(f"The file does not exist in the path: {file_path_str}")
-            return None
-
-        extension = file_path.suffix.lower()
-        extracted_text = ""
-
-        try:
-            if extension == ".pdf":
-                # if not fitz: <-- REMOVE
-                if not PdfReader: # <-- ADD
-                    # logger.error("PyMuPDF (fitz) is not installed. Cannot process PDF.") <-- REMOVE
-                    logger.error("pypdf is not installed. Cannot process PDF.") # <-- ADD
-                    return None
-                logger.info(f"Extracting text from PDF: {file_path_str}")
-                # doc = fitz.open(file_path) <-- REMOVE
-                # texts = [page.get_text("text") for page in doc] <-- REMOVE
-                # doc.close() <-- REMOVE
-                reader = PdfReader(file_path) # <-- ADD
-                texts = [page.extract_text() for page in reader.pages if page.extract_text()] # <-- ADD (Added check for non-empty text)
-                extracted_text = "\\n".join(texts)
-            elif extension == ".docx":
-                if not docx:
-                     logger.error("python-docx is not installed. Cannot process DOCX.")
-                     return None
-                logger.info(f"Extracting text from DOCX: {file_path_str}")
-                doc = docx.Document(file_path)
-                texts = [p.text for p in doc.paragraphs]
-                extracted_text = "\n".join(texts)
-            elif extension == ".txt":
-                logger.info(f"Reading text file: {file_path_str}")
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    extracted_text = f.read()
-            else:
-                logger.warning(f"Unsupported file extension for direct extraction: {extension}")
-                return None # Do not try to process unknown extensions directly
-
-            logger.info(f"Text extracted from {file_path.name}: {len(extracted_text)} characters.")
-            return extracted_text
-
-        except Exception as e:
-            logger.error(f"Error extracting text from {file_path_str}: {e}", exc_info=True)
-            return None # Return None if extraction fails
+    """Generate embeddings for document chunks"""
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None, llm_client: Optional[LLMClientInterface] = None):
+        super().__init__(config, llm_client)
+        self.model = self.config.get("model", "text-embedding-3-small")
+        self.chunk_size = self.config.get("chunk_size", 1000)
+        self.chunk_overlap = self.config.get("chunk_overlap", 200)
+        logger.info(f"{self.name} initialized. Model: {self.model}, ChunkSize: {self.chunk_size}, Overlap: {self.chunk_overlap}")
+        if not self.llm_client:
+            logger.warning(f"{self.name} initialized without LLM client. Embedding generation will fail.")
 
     def _chunk_text(self, text: str) -> List[str]:
-        """Divide the text into overlapping chunks"""
-        if not text: # Handle empty text
+        """Divide text into chunks based on configured size and overlap"""
+        # Simple split by paragraph and then words for now, respecting size
+        # TODO: Implement more robust chunking (e.g., using RecursiveCharacterTextSplitter)
+        if not text:
             return []
-        if len(text) <= self.chunk_size:
-            return [text]
-
+            
+        max_len = self.chunk_size
         chunks = []
-        start = 0
-        while start < len(text):
-            end = start + self.chunk_size
-            chunks.append(text[start:end])
-            # Ensure the step is not zero or negative if overlap >= size
-            step = self.chunk_size - self.chunk_overlap
-            start += step if step > 0 else self.chunk_size # Advance at least 1 if overlap is large
-        return [chunk for chunk in chunks if chunk.strip()] # Ignore empty chunks
-
-    # --- MODIFIED process METHOD ---
-    async def process(self, document: Document, context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Extract text from the file if necessary, divide it into chunks,
-        and generate embeddings using OpenAI.
-        Receives the complete Document object.
-        """
-        if not self.client:
-            return {"error": f"AsyncOpenAI client not initialized in {self.name}"} # Same error as before
-
-        text_to_process = None
-
-        # 1. Intentar extraer texto del archivo usando file_path
-        if document.file_path:
-            logger.info(f"Attempting text extraction from file: {document.file_path}") # Log attempt
-            text_to_process = self._extract_text_from_file(document.file_path)
-            if text_to_process is None:
-                logger.warning(f"Text extraction failed for file: {document.file_path}") # Log failure
-        else:
-            logger.warning(f"Document {document.id} does not have file_path. Cannot extract text from the file.")
-
-        # 2. Fallback: If text cannot be extracted or there is no file_path, use document.content
-        #    BUT only if it does not seem to be a binary placeholder.
-        if text_to_process is None:
-            logger.warning(f"Could not extract text from the file for doc {document.id}. Trying to use 'document.content'.")
-            # Log the content (or its absence/placeholder status) for clarity
-            if document.content:
-                if document.content.startswith("[Archivo"):
-                    logger.warning(f"\'document.content\' for doc {document.id} starts with placeholder.")
+        current_chunk = ""
+        paragraphs = text.split('\n')
+        
+        for para in paragraphs:
+            if not para.strip():
+                continue
+            words = para.split()
+            for word in words:
+                if len(current_chunk) + len(word) + 1 > max_len:
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    current_chunk = word
                 else:
-                    logger.info(f"Using 'document.content' as text source for doc {document.id}.")
-                    text_to_process = document.content
-            else:
-                 logger.warning(f"\'document.content\' for doc {document.id} is empty or null.")
+                    if current_chunk:
+                        current_chunk += " " + word
+                    else:
+                        current_chunk = word
+            # Add remaining part of paragraph to chunk (might push it over limit slightly)
+            if current_chunk and not current_chunk.endswith(word): 
+                 current_chunk += " " + word # Add last word if needed
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+            
+        # Overlap logic would need to be added if using a different strategy
+        logger.info(f"Chunked text into {len(chunks)} chunks (simple strategy).")
+        return chunks
 
-            # Final check before erroring out
-            if text_to_process is None:
-                 logger.error(f"Could not get valid text content for doc {document.id} from file or 'content'.")
-                 return {
-                     "error": "Could not get valid text content to process.",
-                     "processor": self.name,
-                     "timestamp": datetime.utcnow().isoformat()
-                 }
-
-        # 3. Chunking
-        chunks = self._chunk_text(text_to_process)
-        if not chunks:
-            logger.warning(f"Processed text for doc {document.id} resulted in 0 chunks.")
-            return {"embeddings": [], "chunks_text": [], "chunk_count": 0 } # Return empty
-
-        logger.info(f"Processed text for doc {document.id} divided into {len(chunks)} chunks for embeddings.")
-
-        # 4. Generation of embeddings
-        embeddings = []
+    async def process(self, document: Document, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate embeddings for document text (obtained from context or document)"""
         try:
-            # It is more efficient to send the chunks in batch if the API allows it
-            logger.info(f"Generating embeddings for {len(chunks)} chunks with model {self.model}...")
-            response = await self.client.embeddings.create(
-                input=chunks, # Pass the list of chunks
+            # Get text from context (preferred) or document object
+            # Use 'document_content' key as populated by TextExtractionProcessor
+            document_content = context.get("document_content", document.content or "") 
+            if not document_content:
+                 logger.warning(f"No document content found in context or document for embedding.")
+                 return {"embeddings": [], "chunks_text": [], "chunk_count": 0, "error": "No content for embedding"}
+
+            logger.info(f"EmbeddingProcessor processing document {document.id}")
+
+            if not self.llm_client:
+                 raise RuntimeError(f"{self.name}: LLM client is not available.")
+
+            # Chunk the text
+            chunks = self._chunk_text(document_content)
+            chunk_count = len(chunks)
+            
+            if chunk_count == 0:
+                logger.warning(f"No chunks generated from document content for doc {document.id}")
+                return {"embeddings": [], "chunks_text": [], "chunk_count": 0}
+
+            logger.info(f"Generating embeddings for {chunk_count} chunks using model {self.model}...")
+            
+            # Generate embeddings using the LLM client interface
+            embeddings = await self.llm_client.generate_embeddings(
+                texts=chunks,
                 model=self.model
             )
-            embeddings = [item.embedding for item in response.data]
-            logger.info(f"Generated {len(embeddings)} embeddings.")
 
-            # Validate that the number of embeddings matches the number of chunks
-            if len(embeddings) != len(chunks):
-                logger.error(f"Discrepancy! Expected {len(chunks)} embeddings but received {len(embeddings)}.")
-                # You could try to retry, truncate, or fail
-                return {"error": "Discrepancy in the number of embeddings received from OpenAI."}
-
-        except Exception as e:
-            logger.error(f"Error generating embeddings for the chunks of doc {document.id}: {e}", exc_info=True)
-            return {"error": f"Error in calling OpenAI Embeddings: {e}" }
-
-        # 5. Result
-        return {
-            "embeddings": embeddings,
-            "chunks_text": chunks, # ¡Los chunks de texto REAL!
-            "model": self.model,
-            "dimension": len(embeddings[0]) if embeddings else 0, # Dimensión real del primer vector
-            "chunk_count": len(chunks),
-            "processor": self.name,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
-    def _initialize_openai_client(self):
-        """Initialize OpenAI client with proper configuration"""
-        if self.client:
-            return self.client
+            if not embeddings or len(embeddings) != chunk_count:
+                 logger.error(f"LLM client failed to return valid embeddings. Expected {chunk_count}, got {len(embeddings) if embeddings else 0}")
+                 raise ValueError("Embedding generation failed or returned incorrect number of vectors.")
             
-        # Obtener API key con verificación
-        api_key = os.environ.get("OPENAI_API_KEY", settings.OPENAI_API_KEY)
-        
-        # Validar que la API key no esté vacía
-        if not api_key or api_key.strip() == "" or api_key == "None":
-            logger.error(f"{self.name}: OPENAI_API_KEY no está definida o está vacía")
-            return None
-    
-        timeout = httpx.Timeout(60.0)
-        
-        try:
-            # Create HTTP client for OpenAI
-            logger.info(f"[{self.name}] Initializing OpenAI client")
-            from openai import AsyncOpenAI
+            logger.info(f"Successfully generated {len(embeddings)} embeddings for doc {document.id}")
             
-            # Reduce excessive debug logging for production
-            self.client = AsyncOpenAI(
-                api_key=api_key,
-                timeout=timeout,
-            )
-            return self.client
+            return {
+                "embeddings": embeddings,
+                "chunks_text": chunks,
+                "chunk_count": chunk_count,
+                "model": self.model, # Return the model used
+                "processor": self.name,
+                "timestamp": datetime.utcnow().isoformat()
+            }
         except Exception as e:
-            logger.error(f"[{self.name}] Error initializing OpenAI client: {str(e)}")
-            return None
+            logger.error(f"Error in {self.name} for doc {document.id}: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "processor": self.name,
+                "timestamp": datetime.utcnow().isoformat()
+            }
 
 # Register of available processors
 AVAILABLE_PROCESSORS = {
@@ -762,13 +602,14 @@ AVAILABLE_PROCESSORS = {
     "embedding": EmbeddingProcessor
 }
 
-def get_processor(processor_type: str, config: Optional[Dict[str, Any]] = None) -> BaseProcessor:
+def get_processor(processor_type: str, config: Optional[Dict[str, Any]] = None, llm_client: Optional[LLMClientInterface] = None) -> BaseProcessor:
     """
     Get an instance of a processor by its type
     
     Args:
         processor_type: Processor type
         config: Optional configuration
+        llm_client: Optional shared LLM client instance
         
     Returns:
         BaseProcessor: Instance of the processor
@@ -781,4 +622,4 @@ def get_processor(processor_type: str, config: Optional[Dict[str, Any]] = None) 
     
     ProcessorClass = AVAILABLE_PROCESSORS[processor_type]
     # Pass the configuration directly to the constructor of the class
-    return ProcessorClass(config) 
+    return ProcessorClass(config=config, llm_client=llm_client) 
