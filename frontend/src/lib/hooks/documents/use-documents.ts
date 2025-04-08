@@ -69,16 +69,42 @@ export function useDocuments() {
 
   const uploadDocument = useCallback(async (file: File, onProgress?: (progress: number) => void) => {
     if (!checkSessionBeforeAction()) return null;
-    
+
+    let uploadedDoc: Document | null = null;
+
     try {
       setIsLoading(true);
       setError(null);
-      
-      const result = await apiClient.documents.upload(file, onProgress);
-      
-      await fetchDocuments(); // Update the list of documents
+
+      uploadedDoc = await apiClient.documents.upload(file, onProgress) as Document;
+
+      await fetchDocuments();
       toast.success('Document uploaded successfully');
-      return result as Document;
+
+      // --- Trigger embedding process after successful upload ---
+      if (uploadedDoc && uploadedDoc.id) {
+        console.log(`Attempting to trigger embeddings for document ID: ${uploadedDoc.id}`);
+        try {
+          api.documents.processEmbeddings(uploadedDoc.id, {})
+            .then(() => {
+              console.log(`Successfully SENT trigger for embedding processing for document ${uploadedDoc?.id}`);
+              toast.info(`Embedding processing started for ${uploadedDoc?.title}`);
+            })
+            .catch((embeddingError: any) => {
+              console.error(`Frontend CATCH: Failed to trigger embedding processing for document ${uploadedDoc?.id}:`, embeddingError);
+              toast.error(`Failed to start embedding processing for ${uploadedDoc?.title}`);
+            });
+        } catch (triggerError) {
+           console.error(`Frontend TRY/CATCH: Error attempting to trigger embedding processing for document ${uploadedDoc?.id}:`, triggerError);
+           toast.error(`Error initiating embedding processing for ${uploadedDoc?.title}`);
+        }
+      } else {
+        console.error('CRITICAL: Document ID missing after successful upload! Cannot trigger embeddings.');
+        toast.warning('Document uploaded, but could not start embedding processing (missing ID).');
+      }
+      // --- End Trigger ---
+
+      return uploadedDoc;
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Error uploading document');
       setError(error);

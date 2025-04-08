@@ -5,6 +5,8 @@ from typing import Optional, Dict, Any, List, Union
 import enum
 import json
 import logging
+# Import the correct PipelineExecutionResponse from pipeline schemas
+from .pipeline import PipelineExecutionResponse
 
 logger = logging.getLogger(__name__)
 
@@ -57,24 +59,6 @@ class DocumentProcessingResultResponse(BaseModel):
     process_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-class PipelineExecutionResponse(BaseModel):
-    id: UUID
-    pipeline_id: UUID
-    document_id: UUID
-    user_id: UUID
-    status: str
-    started_at: datetime
-    completed_at: Optional[datetime] = None
-    results: Optional[Dict[str, Any]] = None
-    parameters: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    pipeline_name: Optional[str] = None # Keep this if pipeline relationship might be missing
 
     class Config:
         from_attributes = True

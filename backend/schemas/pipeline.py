@@ -1,4 +1,6 @@
 from pydantic import BaseModel, Field
+from pydantic import validator
+import json
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 from enum import Enum
@@ -70,6 +72,20 @@ class PipelineExecutionResponse(PipelineExecutionBase):
     completed_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @validator('results', pre=True, always=True)
+    def validate_results(cls, v):
+        """Ensure results is a dict, parsing from JSON string if necessary."""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return v # Already a dict, accept it
+        if isinstance(v, str):
+            try:
+                return json.loads(v) # Parse JSON string
+            except json.JSONDecodeError:
+                raise ValueError("Invalid JSON string provided for results")
+        raise ValueError("Results must be a dictionary or a valid JSON string")
 
     class Config:
         from_attributes = True

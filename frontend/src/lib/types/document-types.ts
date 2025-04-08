@@ -13,6 +13,8 @@ export interface Document {
   file_path?: string;
   file_type?: string;
   file_size?: number;
+  processing_status?: string; // Status for embedding/processing
+  error_message?: string;     // Error message from processing
   // Processing results and executions
   processing_results?: Array<{
     id: string;

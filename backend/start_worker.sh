@@ -42,4 +42,4 @@ celery -A backend.tasks.worker worker \
     --pool=$CELERY_POOL \
     "$@"
 
-echo "Worker detenido."
+echo "Worker stopped."

@@ -7,16 +7,15 @@ import asyncio
 import json
 import uuid
 from .worker import celery_app
-from .database import update_pipeline_execution_status
-from database.models.pipeline import Pipeline
+from database.models.pipeline import Pipeline, PipelineExecution
 from database.models.document import Document
 from modules.pipeline.executor import PipelineExecutor, create_processing_result
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.asyncio import create_async_engine
+from database.session import get_async_session_context
 from core.config import settings
 import os
 import traceback
+from datetime import datetime
 
 # Settings logging
 logger = logging.getLogger('tasks.pipeline')
@@ -42,73 +41,90 @@ def test_task(message="default"):
     }
 
 @celery_app.task(name="execute_pipeline")
-def execute_pipeline(pipeline_id, document_id, execution_id=None):
+def execute_pipeline(pipeline_id: str, document_id: str, execution_id: str | None = None):
     """
-    Execute a processing pipeline for a document
+    Execute a processing pipeline for a document. Wraps the async logic.
     
     Args:
         pipeline_id (str): ID pipeline to execute
         document_id (str): ID of the document to process
-        execution_id (str, optional): ID of the execution in the database
+        execution_id (str, optional): ID of the execution in the database (MUST be provided)
     
     Returns:
-        dict: Result of the execution
+        dict: Result of the execution, including final status and elapsed time.
     """
-    logger.info(f"Starting pipeline execution {pipeline_id} for document {document_id}")
-    
-    
-    # Update status to RUNNING if we have execution_id
-    if execution_id:
-        logger.info(f"Updating execution {execution_id} to RUNNING")
-        update_pipeline_execution_status(execution_id, "RUNNING")
-    
-    # Start execution time
-    start_time = time.time()
-    
-    try:
-        # Execute the async logic using asyncio.run
-        result = asyncio.run(_execute_pipeline_async(pipeline_id, document_id, execution_id))
-        
-        # Calculate total time
-        elapsed = time.time() - start_time
-        
-        # Prepare final result - correct access to result fields
-        final_result = {
-            "status": result.get("status", "success"),
-            "pipeline_id": pipeline_id,
-            "document_id": document_id,
-            "elapsed_time": elapsed,
-            "message": result.get("message", ""),
-            "results": result  # Save the complete result
-        }
-        
-        # Update status in database if we have execution_id
-        if execution_id:
-            logger.info(f"Updating execution {execution_id} to COMPLETED")
-            update_pipeline_execution_status(execution_id, "COMPLETED", results=final_result)
-        
-        logger.info(f"Pipeline completed successfully in {elapsed:.2f}s")
-        return final_result
-        
-    except Exception as e:
-        # Register error
-        logger.error(f"Error in pipeline: {str(e)}")
-        logger.error(traceback.format_exc())  # Add full stack trace
-        
-        # Prepare error result
-        error_result = {
+    if not execution_id:
+        logger.error("FATAL: execute_pipeline task called without execution_id. Cannot track status.")
+        # Decide how to handle this - fail task, return error, etc.
+        # For now, return error immediately.
+        return {
             "status": "error",
             "pipeline_id": pipeline_id,
             "document_id": document_id,
-            "error": str(e)
+            "error": "Missing execution_id for tracking.",
+            "elapsed_time": 0
         }
         
-        # Update status in database if we have execution_id
-        if execution_id:
-            logger.info(f"Updating execution {execution_id} to FAILED")
-            update_pipeline_execution_status(execution_id, "FAILED", error_message=str(e))
+    logger.info(f"Starting pipeline task {execution_id} for pipeline {pipeline_id}, doc {document_id}")
+    start_time = time.time()
+    loop = asyncio.get_event_loop() # Get the current event loop for this worker process
+    
+    try:
+        # Execute the async logic using loop.run_until_complete
+        result_data = loop.run_until_complete(
+            _execute_pipeline_async(pipeline_id, document_id, execution_id)
+        )
         
-        return error_result
+        elapsed = time.time() - start_time
+        
+        # Prepare final result based on what _execute_pipeline_async returns
+        final_status = result_data.get("status", "error") # Default to error if status missing
+        final_result = {
+            "status": final_status,
+            "pipeline_id": pipeline_id,
+            "document_id": document_id,
+            "execution_id": execution_id,
+            "elapsed_time": elapsed,
+            "message": result_data.get("message", ""),
+            "results": result_data # Include the full results from the async function
+        }
+        
+        if final_status == "error" and "error" not in final_result:
+            final_result["error"] = result_data.get("error", "Unknown error during async execution")
+            
+        logger.info(f"Pipeline task {execution_id} finished with status '{final_status}' in {elapsed:.2f}s")
+        return final_result
+        
+    except Exception as e:
+        elapsed = time.time() - start_time
+        logger.error(f"FATAL Error in pipeline task {execution_id}: {str(e)}", exc_info=True)
+        
+        # Attempt ASYNC fallback using the SAME loop
+        try:
+            async def fallback_update():
+                # Note: Re-getting context might be needed if main one failed badly
+                async with get_async_session_context() as error_session:
+                    logger.warning(f"Attempting asynchronous fallback to mark execution {execution_id} as FAILED.")
+                    await _async_update_pipeline_execution_status(
+                        error_session, 
+                        uuid.UUID(execution_id), 
+                        "FAILED", 
+                        error_message=f"Task failed unexpectedly: {str(e)}"
+                    )
+            # Run fallback on the same loop
+            loop.run_until_complete(fallback_update())
+        except Exception as fallback_err:
+            logger.error(f"Failed ASYNCHRONOUS fallback status update for {execution_id}: {fallback_err}", exc_info=True)
+             
+        # Prepare error result for Celery
+        return {
+            "status": "error",
+            "pipeline_id": pipeline_id,
+            "document_id": document_id,
+            "execution_id": execution_id,
+            "error": f"Task failed unexpectedly: {str(e)}",
+            "elapsed_time": elapsed
+        }
 
 @celery_app.task(name="monitor_batch_process")
 def monitor_batch_process(batch_id, execution_ids):
@@ -135,95 +151,156 @@ def monitor_batch_process(batch_id, execution_ids):
         "message": "Batch monitoring completed"
     }
 
-async def _execute_pipeline_async(pipeline_id, document_id, execution_id=None):
+async def _execute_pipeline_async(pipeline_id: str, document_id: str, execution_id: str):
     """
-    Real implementation of the pipeline execution
+    Async core logic for pipeline execution. Uses shared session context.
+    Handles intermediate status updates.
     
     Args:
-        pipeline_id (str): ID of the pipeline to execute
-        document_id (str): ID of the document to process
+        pipeline_id (str): ID of the pipeline.
+        document_id (str): ID of the document.
+        execution_id (str): ID of the database execution record (UUID as string).
         
     Returns:
-        dict: Result of the pipeline
+        dict: Results of the pipeline execution, including status and any errors.
     """
-    logger.info(f"Executing pipeline {pipeline_id} for document {document_id}")
+    exec_id_uuid = uuid.UUID(execution_id)
+    pipeline_id_uuid = uuid.UUID(pipeline_id)
+    document_id_uuid = uuid.UUID(document_id)
     
-    logger.info(f"ENV POSTGRES_HOST={os.environ.get('POSTGRES_HOST')}")
-    logger.info(f"ENV REDIS_URL={os.environ.get('REDIS_URL')}")
+    logger.info(f"[_execute_pipeline_async] Running for exec {execution_id}")
+    
+    # Default return values in case of early exit or unhandled error
+    final_result_context = {"status": "error", "error": "Pipeline execution failed unexpectedly."}
 
     try:
-        # Use the centralized method in config to get the correct async URL
-        database_url = settings.get_async_database_url()
-        logger.info(f"Using database URL (sanitized): {database_url.replace(settings.POSTGRES_PASSWORD, '***')}")
-    except Exception as e:
-        logger.error(f"Error getting database URL: {e}")
-        # In case of error, manually construct a secure URL
-        database_url = f"postgresql+asyncpg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}/{settings.POSTGRES_DB.strip('/')}"
-        logger.info("Using fallback database URL")
-    
-    engine = create_async_engine(database_url)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
-        # Load pipeline and document
-        pipeline = await session.get(Pipeline, uuid.UUID(pipeline_id))
-        document = await session.get(Document, uuid.UUID(document_id))
+        # Use the shared async session context
+        async with get_async_session_context() as session:
+            logger.debug(f"[_execute_pipeline_async] Acquired session {id(session)} for exec {execution_id}")
             
-        if not pipeline or not document:
-            error_msg = f"Pipeline {pipeline_id} or document {document_id} not found"
-            logger.error(error_msg)
-            # Update execution status if possible
-            if execution_id:
-                 update_pipeline_execution_status(execution_id, "FAILED", error_message=error_msg)
-            raise ValueError(error_msg)
+            # 1. Mark as RUNNING
+            await _async_update_pipeline_execution_status(session, exec_id_uuid, "RUNNING")
 
-        logger.info(f"Executing pipeline '{pipeline.name}' (ID: {pipeline.id}) for document '{document.title}' (ID: {document.id})")    
-        
-        # Removed direct text extraction logic - it's now handled by TextExtractionProcessor
-        # file_path = document.file_path ...
-        # if file_ext == '.txt': ... etc ...
+            # 2. Load pipeline and document using the session
+            pipeline = await session.get(Pipeline, pipeline_id_uuid)
+            document = await session.get(Document, document_id_uuid)
+                
+            if not pipeline or not document:
+                error_msg = f"Pipeline {pipeline_id} or document {document_id} not found"
+                logger.error(f"[_execute_pipeline_async] {error_msg} for exec {execution_id}")
+                await _async_update_pipeline_execution_status(session, exec_id_uuid, "FAILED", error_message=error_msg)
+                # Return error context
+                final_result_context["error"] = error_msg
+                return final_result_context # Exit async function
 
-        # Instantiate and execute the pipeline executor
-        # The executor will call processors, one of which should be TextExtractionProcessor
-        # If an LLM client is needed by processors, it should be obtained here
-        try:
-             from backend.core.dependencies import get_llm_client # Get LLM client if needed
-             llm_client = get_llm_client()
-        except Exception as client_err:
-             logger.warning(f"Could not get LLM Client for pipeline execution {execution_id}: {client_err}. Some steps might fail.")
-             llm_client = None
-
-        executor = PipelineExecutor(llm_client=llm_client) # Pass client to executor
-        results = await executor.execute(uuid.UUID(execution_id), pipeline, document) # Pass full document
-
-        # 3. Update execution with results and status COMPLETED
-        # Check if the executor itself reported errors
-        if results.get("errors"):
-             error_message = "; ".join(results["errors"]) # Combine errors from steps
-             logger.error(f"Pipeline execution {execution_id} completed with errors: {error_message}")
-             update_pipeline_execution_status(execution_id, "FAILED", error_message=error_message, results=results)
-             # Return the results dictionary which contains the errors
-             return results 
-        else:
-            # Success case
-            logger.info(f"Pipeline execution {execution_id} completed successfully.")
-            # Create processing result record
+            logger.info(f"[_execute_pipeline_async] Executing pipeline '{pipeline.name}' (ID: {pipeline.id}) for doc '{document.title}' (ID: {document.id}) - Exec ID: {execution_id}")    
+            
+            # 3. Get LLM Client (optional, based on pipeline steps)
             try:
-                await create_processing_result(
-                    session,
-                    document.id, 
-                    pipeline.name, 
-                    results # Pass the whole result context
-                )
-                logger.info(f"Processing results saved for document {document.id} via pipeline {pipeline.id}")
-            except Exception as e:
-                # Log error but don't fail the whole task just for this
-                logger.exception(f"Error saving processing results for pipeline execution {execution_id}: {str(e)}")
+                 from core.dependencies import get_llm_client
+                 llm_client = get_llm_client()
+            except Exception as client_err:
+                 logger.warning(f"Could not get LLM Client for pipeline execution {execution_id}: {client_err}. Some steps might fail.")
+                 llm_client = None
 
-            update_pipeline_execution_status(execution_id, "COMPLETED", results=results)
-            # Add status to returned results for consistency
-            results["status"] = "success"
-            return results
+            # 4. Execute pipeline steps
+            executor = PipelineExecutor(llm_client=llm_client)
+            # Execute and get the results dictionary
+            results_context = await executor.execute(exec_id_uuid, pipeline, document) 
+
+            # 5. Update execution status based on results_context
+            if results_context.get("status") == "error" or results_context.get("errors"):
+                 error_message = "; ".join(results_context.get("errors", ["Unknown execution error"]))
+                 logger.error(f"[_execute_pipeline_async] Pipeline execution {execution_id} completed with errors: {error_message}")
+                 await _async_update_pipeline_execution_status(session, exec_id_uuid, "FAILED", error_message=error_message, results=results_context)
+                 final_result_context = results_context # Pass back the context with errors
+                 final_result_context["status"] = "error" # Ensure status is error
+            else:
+                # Success case
+                logger.info(f"[_execute_pipeline_async] Pipeline execution {execution_id} completed successfully.")
+                
+                # 6. Save processing result record (optional, but good practice)
+                try:
+                    await create_processing_result(
+                        session,         # Pass session as first positional argument
+                        document_id=document.id, 
+                        pipeline_name=pipeline.name, 
+                        results=results_context # Pass results as 'results' keyword arg
+                    )
+                    logger.info(f"[_execute_pipeline_async] Processing results saved for doc {document.id} via pipeline {pipeline.id} (Exec ID: {execution_id})")
+                except Exception as pr_err:
+                    logger.exception(f"[_execute_pipeline_async] Error saving processing results for exec {execution_id}: {str(pr_err)}")
+                    # Log error but don't fail the task just for this
+
+                # 7. Mark execution as COMPLETED
+                await _async_update_pipeline_execution_status(session, exec_id_uuid, "COMPLETED", results=results_context)
+                final_result_context = results_context # Pass back success context
+                final_result_context["status"] = "success" # Ensure status is success
+        
+        # Session commits/closes automatically via context manager
+
+    except Exception as e:
+         # Catch exceptions during the async execution itself
+         logger.error(f"[_execute_pipeline_async] Unhandled exception during pipeline execution {execution_id}: {e}", exc_info=True)
+         final_result_context = {"status": "error", "error": f"Unhandled exception: {str(e)}"}
+         # Attempt to mark as FAILED within a NEW session, as the old one might be invalid
+         try:
+            async with get_async_session_context() as error_session:
+                 logger.warning(f"[_execute_pipeline_async] Attempting final FAILED status update for {execution_id} in new session.")
+                 await _async_update_pipeline_execution_status(error_session, exec_id_uuid, "FAILED", error_message=final_result_context["error"])
+         except Exception as final_update_err:
+            logger.error(f"[_execute_pipeline_async] Failed to update status to FAILED after unhandled exception for {execution_id}: {final_update_err}", exc_info=True)
+            
+    logger.debug(f"[_execute_pipeline_async] Returning context for exec {execution_id}: {final_result_context.get('status')}")
+    return final_result_context # Return the results/error context
+
+# --- NEW Async Status Update Helper ---
+async def _async_update_pipeline_execution_status(
+    session: AsyncSession, 
+    execution_id: uuid.UUID, 
+    status: str, 
+    results: dict | None = None, 
+    error_message: str | None = None
+):
+    """Asynchronously update pipeline execution status using the provided session."""
+    if not execution_id:
+        logger.error("Cannot update status: Execution ID is missing.")
+        return False
+        
+    try:
+        execution = await session.get(PipelineExecution, execution_id)
+        if not execution:
+            logger.error(f"Cannot update status: Execution {execution_id} not found.")
+            return False
+
+        # Update common fields
+        execution.status = status
+        execution.updated_at = datetime.now()
+
+        # Update status-specific fields
+        if status == "RUNNING" and not execution.started_at:
+            execution.started_at = datetime.now()
+        elif status == "COMPLETED":
+            execution.completed_at = datetime.now()
+            execution.error_message = None # Clear error on completion
+            if results:
+                # Ensure results are JSON serializable - PipelineExecutor results should be
+                try:
+                    execution.results = json.dumps(results)
+                except TypeError as json_err:
+                    logger.error(f"Failed to serialize results for execution {execution_id}: {json_err}")
+                    execution.results = json.dumps({"error": "Result serialization failed"})
+        elif status == "FAILED":
+            execution.error_message = error_message[:1024] if error_message else "Unknown error" # Truncate error
+
+        await session.flush() # Make changes visible within the transaction
+        logger.info(f"Updated execution {execution_id} status to {status} in session {id(session)}")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating execution {execution_id} status to {status}: {e}", exc_info=True)
+        # Don't let status update failure stop the main task flow easily,
+        # but log it thoroughly. Consider raising if critical.
+        return False
 
 # --- NEW Embedding Processing Task ---
 
@@ -241,9 +318,10 @@ def process_document_embeddings_task(
     """
     embedding_logger.info(f"Received task to process embeddings for doc {document_id_str} by user {user_id_str}")
     start_time = time.time()
+    loop = asyncio.get_event_loop() # Get the current event loop
     try:
-        # Run the asynchronous helper function
-        asyncio.run(_process_document_embeddings_async(
+        # Run the asynchronous helper function using loop.run_until_complete
+        loop.run_until_complete(_process_document_embeddings_async(
             document_id_str,
             user_id_str,
             model,
@@ -269,11 +347,12 @@ async def _process_document_embeddings_async(
     """
     Asynchronous helper function containing the core logic for embedding processing.
     Uses the shared async session context manager.
+    Now allows reprocessing for COMPLETED/FAILED documents.
     """
     document_id = uuid.UUID(document_id_str)
-    user_id = uuid.UUID(user_id_str) # Convert user_id as well
+    user_id = uuid.UUID(user_id_str)
 
-    embedding_logger.info(f"[Async Helper] Starting embedding processing for doc {document_id}")
+    embedding_logger.info(f"[Async Helper] Starting embedding processing/reprocessing for doc {document_id} with model '{model}'")
     
     # Import necessary components here to avoid circular dependencies at module level
     from database.session import get_async_session_context
@@ -296,14 +375,27 @@ async def _process_document_embeddings_async(
                 embedding_logger.error(f"[Async Helper] Document {document_id} not found.")
                 return # Exit task gracefully
             
-            # Check if already processed or currently processing to avoid redundant work
-            if document.processing_status in [ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING]:
+            # Check if already processing to avoid redundant work
+            # Allow reprocessing for COMPLETED or FAILED states
+            if document.processing_status == ProcessingStatus.PROCESSING:
                  embedding_logger.warning(f"[Async Helper] Document {document_id} is already {document.processing_status.value}. Skipping task.")
                  return
+            elif document.processing_status == ProcessingStatus.PENDING:
+                 embedding_logger.info(f"[Async Helper] Document {document_id} is PENDING. Proceeding to PROCESSING.")
+            elif document.processing_status in [ProcessingStatus.COMPLETED, ProcessingStatus.FAILED]:
+                embedding_logger.info(f"[Async Helper] Document {document_id} status is {document.processing_status.value}. Reprocessing allowed.")
+            # Add other states if needed, e.g. NOT_PROCESSED
+            elif document.processing_status == ProcessingStatus.NOT_PROCESSED:
+                embedding_logger.info(f"[Async Helper] Document {document_id} is NOT_PROCESSED. Starting initial processing.")
+            else:
+                # Should not happen with current enum, but good practice
+                embedding_logger.warning(f"[Async Helper] Document {document_id} has unexpected status {document.processing_status.value}. Attempting to process anyway.")
 
+            # Set status to PROCESSING and clear any previous error message
             document.processing_status = ProcessingStatus.PROCESSING
-            await session.flush() # Flush to make status update visible if needed, commit happens later
-            embedding_logger.info(f"[Async Helper] Set doc {document_id} status to PROCESSING")
+            document.error_message = None # Clear previous errors on new attempt
+            await session.flush() # Flush to make status update visible
+            embedding_logger.info(f"[Async Helper] Set doc {document_id} status to PROCESSING and cleared error message.")
             
             # --- START TEXT EXTRACTION ---
             context = {} # Initialize context
@@ -356,14 +448,15 @@ async def _process_document_embeddings_async(
                             try:
                                 # Need DocumentService to save embeddings
                                 doc_service = DocumentService(llm_client=llm_client) # Instantiate service
+                                # Call updated save_embeddings with necessary args
                                 saved_list = await doc_service.save_embeddings(
-                                    db=session, # Pass the session
+                                    db=session,
                                     document_id=document_id,
                                     embeddings=embeddings_data,
                                     chunks_text=chunks_text_data, 
-                                    model=saved_model
+                                    model=saved_model # Pass the model used
                                 )
-                                embedding_logger.info(f"[Async Helper] Successfully saved {len(saved_list)} embeddings for doc {document_id}.")
+                                embedding_logger.info(f"[Async Helper] Successfully saved/updated {len(saved_list)} embeddings for doc {document_id}.")
                                 final_status = ProcessingStatus.COMPLETED # Mark as completed only on full success
                                 error_message_final = None # Clear error message on success
                             except Exception as save_err:
@@ -408,6 +501,6 @@ async def _process_document_embeddings_async(
 
 # --- End NEW Embedding Processing Task ---
 
-logger.info("Celery tasks module loaded (using direct SQLAlchemy).")
+logger.info("Celery tasks module adapted to use get_event_loop().run_until_complete().")
 
   

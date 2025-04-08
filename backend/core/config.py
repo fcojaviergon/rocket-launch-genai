@@ -76,10 +76,10 @@ class Settings(BaseSettings):
     # Document storage
     # Calculate path relative to the project root (assuming config.py is in core/)
     _project_root: ClassVar[str] = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    DOCUMENT_STORAGE_PATH: str = os.path.join(_project_root, "storage", "documents")
+    DOCUMENT_STORAGE_PATH: str = os.path.join(_project_root, "backend", "storage", "documents")
 
     # Logging
-    LOG_DIR: str = os.path.join(_project_root, "logs")
+    LOG_DIR: str = os.path.join(_project_root, "backend", "logs")
 
     # Initial Admin User (for init_db)
     # These should be set in the environment for initial setup

@@ -74,23 +74,36 @@ export function DocumentEmbeddingTab({ document }: DocumentEmbeddingTabProps) {
     setProcessingSuccess(null);
 
     try {
-      const response = await api.documents.processEmbeddings(document.id, {
+      // Define the wrapper type based on common ApiResponse or assume it directly
+      type ApiWrapperResponse<T> = { data: T };
+
+      // Assume apiClient.post returns an object like { data: EmbeddingResponse }
+      const responseWrapper = await api.documents.processEmbeddings(document.id, {
         model: embeddingModel,
         chunk_size: chunkSize,
         chunk_overlap: chunkOverlap,
-      }) as EmbeddingResponse;
+      }) as ApiWrapperResponse<EmbeddingResponse>;
 
-      if (response.status === 'success') {
-        setProcessingSuccess(response.message || 'Embeddings processed successfully');
-        toast.success(response.message || 'Embeddings processed successfully');
+      // Access the actual response data, assuming it's nested under 'data'
+      const response = responseWrapper.data; 
+
+      if (response?.status === 'success') { // Check response.data.status
+        // Use message from response.data.message if available
+        const successMsg = response.message || 'Embeddings processed successfully';
+        setProcessingSuccess(successMsg);
+        toast.success(successMsg);
       } else {
-        setProcessingError('Error processing embeddings: ' + (response.detail || 'Invalid response'));
-        toast.error('Error processing embeddings');
+         // Use detail from response.data.detail if available
+        const errorMsg = response?.detail || 'Invalid response structure received'; 
+        setProcessingError('Error processing embeddings: ' + errorMsg);
+        toast.error('Error processing embeddings: ' + (response?.message || errorMsg)); // Display message if available, else detail/fallback
       }
     } catch (error: any) {
       console.error('Error processing embeddings:', error);
-      setProcessingError('Error processing embeddings: ' + (error.message || 'Unknown error'));
-      toast.error('Error processing embeddings');
+      // Attempt to get a more specific error message from the caught error
+      const detail = error?.response?.data?.detail || error.message || 'Unknown error';
+      setProcessingError('Error processing embeddings: ' + detail);
+      toast.error('Error processing embeddings: ' + detail);
     } finally {
       setIsProcessing(false);
     }

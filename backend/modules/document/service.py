@@ -2,7 +2,7 @@ import os
 import uuid
 from pathlib import Path
 from dotenv import load_dotenv
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import UUID
@@ -131,18 +131,12 @@ class DocumentService:
         await db.refresh(document)
         
         # --- Trigger asynchronous embedding processing --- 
-        try:
-            await self.process_document_embeddings_async(document.id)
-            logger.info(f"Successfully enqueued embedding task for document {document.id}")
-            # Optionally update status right away, though the task might do it too
-            # document.processing_status = ProcessingStatus.PENDING # Assuming enum exists
-            # await db.commit() # Commit status update if done here
-        except Exception as task_error:
-            # Log the error but don't fail the document creation
-            logger.error(f"Failed to enqueue embedding task for document {document.id}: {task_error}", exc_info=True)
-            # Optionally update status to reflect the failure to enqueue
-            # document.processing_status = ProcessingStatus.FAILED 
-            # await db.commit()
+        # This section is removed as processing is now triggered via a separate API endpoint
+        # try:
+        #     await self.process_document_embeddings_async(document.id)
+        #     logger.info(f"Successfully enqueued embedding task for document {document.id}")
+        # except Exception as task_error:
+        #     logger.error(f"Failed to enqueue embedding task for document {document.id}: {task_error}", exc_info=True)
         # --- End Trigger --- 
         
         return document
@@ -420,63 +414,65 @@ class DocumentService:
         self,
         db: AsyncSession,
         document_id: UUID,
-        embeddings_payload: Dict[str, Any], # Change to Dict for flexibility or use a specific schema
+        embeddings: List[List[float]], # Be specific: List of float lists
+        chunks_text: List[str],      # Be specific: List of strings
+        model: str,                  # Add model parameter
         batch_size: int = 100
-    ) -> None:
+    ) -> List[DocumentEmbedding]: # Return the saved ORM objects
         """
-        Save the embeddings of a document in the database
+        Save the embeddings of a document in the database, replacing existing ones for the same model.
         
         Args:
             db: Asynchronous database session
             document_id: ID of the document
-            embeddings_payload: Dictionary containing embeddings and chunks_text
-            batch_size: Number of embeddings to save in each batch
+            embeddings: List of embedding vectors
+            chunks_text: List of corresponding text chunks
+            model: Name of the embedding model used
+            batch_size: Number of embeddings to save in each batch (currently unused)
+            
+        Returns:
+            List[DocumentEmbedding]: List of the created DocumentEmbedding ORM objects.
         """
-        embeddings = embeddings_payload.get('embeddings')
-        chunks_text = embeddings_payload.get('chunks_text')
-        
         # Verify that the document exists
-        query = select(Document).where(Document.id == document_id)
-        result = await db.execute(query)
-        document = result.scalars().first()
-        
+        document = await db.get(Document, document_id) # Use db.get for primary key lookup
         if not document:
             raise ValueError(f"The document with ID {document_id} does not exist")
         
         # Verify that there is the same number of embeddings and chunks of text
         if len(embeddings) != len(chunks_text):
             raise ValueError(f"Number of embeddings ({len(embeddings)}) does not match chunks_text ({len(chunks_text)})")
-        
-        # Delete previous embeddings for the same model
-        # To avoid duplicates if processed again
-        delete_query = select(DocumentEmbedding).where(
+            
+        # Delete previous embeddings for the same document and model
+        # Use await db.execute with delete() - more efficient for bulk deletes
+        delete_stmt = delete(DocumentEmbedding).where(
             (DocumentEmbedding.document_id == document_id) &
-            (DocumentEmbedding.model == self.default_embedding_model)
+            (DocumentEmbedding.model == model) # Use the provided model
         )
-        result = await db.execute(delete_query)
-        existing_embeddings = result.scalars().all()
-        for emb in existing_embeddings:
-            await db.delete(emb)
+        await db.execute(delete_stmt)
+        logger.info(f"Deleted existing embeddings for document {document_id} and model '{model}'")
         
         # Save the new embeddings
         saved_embeddings = []
+        new_embedding_objects = [] # Collect objects to add in bulk
         for i, (embedding, chunk_text) in enumerate(zip(embeddings, chunks_text)):
             # Create the embedding model
             db_embedding = DocumentEmbedding(
                 document_id=document_id,
-                model=self.default_embedding_model,
+                model=model, # Use the provided model
                 embedding=embedding,
                 chunk_index=i,
                 chunk_text=chunk_text
             )
+            new_embedding_objects.append(db_embedding)
             
-            db.add(db_embedding)
-            saved_embeddings.append(db_embedding)
+        db.add_all(new_embedding_objects) # Use add_all for efficiency
+        await db.flush() # Flush to assign IDs if needed before returning
+        # No need to commit here if called within a transaction (like from the Celery task)
+        # The caller (Celery task context manager) should handle the commit.
+        logger.info(f"Added {len(new_embedding_objects)} new embeddings for document {document_id} model '{model}'")
         
-        # Save changes in the database
-        await db.commit()
-        
-        return saved_embeddings
+        # Return the newly created objects (they have IDs after flush)
+        return new_embedding_objects
     
     async def search_similar_documents(
         self, 

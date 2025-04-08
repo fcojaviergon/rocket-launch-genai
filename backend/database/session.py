@@ -86,23 +86,18 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def get_async_session_context() -> AsyncGenerator[AsyncSession, None]:
     """
     Context manager to provide an asynchronous database session.
-    
-    This context manager ensures proper event loop handling and connection management
-    for tasks running in different execution contexts (like Celery workers).
+    Uses the global AsyncSessionFactory for consistency.
     """
-    # Get the current event loop - this ensures we're using the loop from the current context
-    loop = asyncio.get_event_loop()
-    logger.debug(f"Creating session in event loop {id(loop)}")
+    # Simply create session from the global factory
+    session: AsyncSession = AsyncSessionFactory() 
     
-    # Create a session specific to this event loop
-    session: AsyncSession = AsyncSessionFactory()
-    logger.debug(f"Session {id(session)} created in loop {id(loop)}.")
+    logger.debug(f"Session {id(session)} created via factory.")
     
     try:
         yield session # 1. Provide the session
         # 2. If the 'yield' is exited without exceptions, make a commit:
         await session.commit() 
-        logger.debug(f"Session {id(session)} committed in loop {id(loop)}.")
+        logger.debug(f"Session {id(session)} committed via factory.")
     except Exception as e:
         logger.error(f"Session {id(session)} rollback due to error: {e}", exc_info=True)
         # 3. If an exception occurs within the 'with', make a rollback:
@@ -113,4 +108,4 @@ async def get_async_session_context() -> AsyncGenerator[AsyncSession, None]:
         # Only close the session, do NOT dispose the engine.
         # Disposing the engine closes the entire connection pool.
         await session.close()
-        logger.debug(f"Session {id(session)} closed in loop {id(loop)}.")
+        logger.debug(f"Session {id(session)} closed via factory.")

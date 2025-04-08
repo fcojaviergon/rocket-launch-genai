@@ -76,7 +76,7 @@ export function UploadDialog({ isOpen, onClose, onUploadComplete }: UploadDialog
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md bg-white">
+      <DialogContent className="sm:max-w-md bg-white dark:bg-gray-800">
         <DialogHeader>
           <DialogTitle>Upload document</DialogTitle>
         </DialogHeader>

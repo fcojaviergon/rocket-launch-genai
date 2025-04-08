@@ -13,10 +13,11 @@ import { ExecutionStatus } from '@/components/pipelines/monitoring/execution-sta
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { PipelineExecution } from '@/lib/types/pipeline-types';
-import { Document } from '@/lib/types/document-types';
+import { Document as DocumentType } from '@/lib/types/document-types';
 import { useApi } from '@/lib/hooks/api';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
+import { DocumentService } from '@/lib/services/documents/document-service';
 
 interface DocumentDetails {
   id: string;
@@ -71,12 +72,13 @@ export default function DocumentDetailPage() {
   const searchParams = useSearchParams();
   const { data: session, status: sessionStatus } = useSession();
   const executionId = searchParams.get('execution_id');
-  const [document, setDocument] = useState<Document | null>(null);
+  const [document, setDocument] = useState<DocumentType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('content');
   const [hasRunningExecutions, setHasRunningExecutions] = useState(false);
   const [executions, setExecutions] = useState<PipelineExecution[]>([]);
+  const [isReprocessing, setIsReprocessing] = useState(false);
   const apiClient = useApi();
   const router = useRouter();
 
@@ -162,7 +164,7 @@ export default function DocumentDetailPage() {
       setError(null);
 
       try {
-        const data = await apiClient.documents.get(id as string) as Document;
+        const data = await apiClient.documents.get(id as string) as DocumentType;
         if (isMounted) {
           console.log('(Effect Run - Detail Page) Fetch successful:', data?.id);
           setDocument(data);
@@ -226,6 +228,30 @@ export default function DocumentDetailPage() {
     }
   }, [refreshExecutions]);
 
+  // --- Handler for Reprocessing ---
+  const handleReprocessEmbeddings = async () => {
+    if (!document?.id) {
+      toast.error("Document ID is missing.");
+      return;
+    }
+
+    setIsReprocessing(true);
+    try {
+      // Using defaults for model, chunk size, overlap for now
+      // Optionally, add UI elements to set these
+      const result = await DocumentService.reprocessEmbeddings(document.id);
+      toast.success(result.message || "Reprocessing task scheduled successfully.");
+      // Optionally, update document status locally or refetch document
+      // For simplicity, we just show the toast here
+    } catch (error: any) { // Catch specific error
+      const errorMessage = error?.response?.data?.detail || error.message || "Failed to schedule reprocessing.";
+      toast.error(`Error: ${errorMessage}`);
+    } finally {
+      setIsReprocessing(false);
+    }
+  };
+  // --- End Reprocessing Handler ---
+
   if (loading) {
     return (
       <div className="flex justify-center items-center min-h-[60vh]">
@@ -255,17 +281,18 @@ export default function DocumentDetailPage() {
    console.log("Document Fetched:", !!document);
    console.log("Raw Executions State (first 2):", JSON.stringify(executions?.slice(0, 2), null, 2));
    console.log("Latest Completed Execution (found):", !!latestCompletedExecution);
-  */ 
+  
    if (latestCompletedExecution) {
        console.log("Latest Completed Execution Object:", JSON.stringify(latestCompletedExecution, null, 2));
    }
+   */
    const executionOutput = latestCompletedExecution?.results;
-   const pipelineResults = executionOutput?.results;
-   const summaryData = pipelineResults?.summary;
+   
+   // Access summary and extracted_info directly from executionOutput
+   const summaryData = executionOutput?.summary; 
    const displayResults = summaryData?.extracted_info;
-  /*
+   /*
    console.log("Extracted executionOutput:", executionOutput ? typeof executionOutput : 'undefined');
-   console.log("Extracted pipelineResults:", pipelineResults ? typeof pipelineResults : 'undefined');
    console.log("Extracted summaryData:", summaryData ? typeof summaryData : 'undefined');
    console.log("Extracted displayResults (extracted_info):", displayResults ? JSON.stringify(displayResults) : displayResults);
    console.log("Is displayResults truthy?", !!displayResults);
@@ -273,7 +300,7 @@ export default function DocumentDetailPage() {
    */
    // --- End logs ---
   // Get the pipeline name from the inner results
-  const pipelineNameForResult = executionOutput?.results?.pipeline_name; // Access results.results.pipeline_name
+  const pipelineNameForResult = executionOutput?.pipeline_name;
   // Execution date remains the same
   const executionDate = latestCompletedExecution?.completed_at || latestCompletedExecution?.updated_at || latestCompletedExecution?.created_at;
   // --- End Revised Result Extraction ---
@@ -372,7 +399,34 @@ export default function DocumentDetailPage() {
                 </TabsContent>
                 
                 <TabsContent value="embeddings" className="mt-4">
-                  <DocumentEmbeddingTab document={document as Document} />
+                  <DocumentEmbeddingTab document={document as any} />
+                  
+                  {/* --- Reprocess Button --- */}
+                  {(document.processing_status === 'completed' || document.processing_status === 'failed') && (
+                    <div className="mt-6 border-t pt-4">
+                      <h4 className="text-sm font-medium mb-2">Actions</h4>
+                      <Button 
+                        onClick={handleReprocessEmbeddings}
+                        disabled={isReprocessing}
+                        variant="outline"
+                      >
+                        {isReprocessing ? (
+                          <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-4 w-4 mr-2" />
+                        )}
+                        Reprocess Embeddings
+                      </Button>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Current Status: {document.processing_status}
+                        {document.processing_status === 'failed' && document.error_message && (
+                          <span className="block text-red-600">Error: {document.error_message}</span>
+                        )}
+                      </p>
+                    </div>
+                  )}
+                  {/* --- End Reprocess Button --- */}
+                  
                 </TabsContent>
                 
                 <TabsContent value="executions" className="mt-4">

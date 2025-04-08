@@ -39,7 +39,7 @@ class Document(BaseModel):
     user: Mapped[User] = relationship(back_populates="documents")
     embeddings: Mapped[List[DocumentEmbedding]] = relationship(back_populates="document", cascade="all, delete-orphan")
     processing_results: Mapped[List[DocumentProcessingResult]] = relationship(back_populates="document", cascade="all, delete-orphan")
-    pipeline_executions: Mapped[List[PipelineExecution]] = relationship(back_populates="document")
+    pipeline_executions: Mapped[List[PipelineExecution]] = relationship(back_populates="document", cascade="all, delete-orphan")
     processing_status = Column(
         SQLEnum(ProcessingStatus, name="processing_status_enum", create_type=False), # Use SQLEnum, create_type=False if using Alembic
         nullable=False,

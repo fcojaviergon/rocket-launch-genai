@@ -557,3 +557,94 @@ async def process_document_embeddings(
         error_detail = traceback.format_exc()
         logger.error(f"Unexpected error in /process-embeddings/{document_id}: {str(e)}\n{error_detail}")
         raise HTTPException(status_code=500, detail=f"Internal error processing embeddings: {str(e)}")
+
+# --- NEW Endpoint for Reprocessing Embeddings ---
+@router.post("/reprocess-embeddings/{document_id}", status_code=status.HTTP_202_ACCEPTED)
+async def reprocess_document_embeddings(
+    document_id: UUID,
+    # Allow specifying model, chunk size, etc., similar to initial processing
+    model: str = Query("text-embedding-3-small", description="Modelo de embedding a usar para reprocesar"),
+    chunk_size: int = Query(1000, ge=100, le=8000, description="Tamaño del chunk para reprocesar"),
+    chunk_overlap: int = Query(200, ge=0, le=1000, description="Superposición de chunks para reprocesar"),
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    doc_service: DocumentService = Depends(get_document_service) # Assuming doc_service is needed
+):
+    """
+    Schedules reprocessing of embeddings for an existing document.
+    Allows reprocessing for documents that are COMPLETED or FAILED.
+    """
+    try:
+        # 1. Get the document
+        document = await doc_service.get_document(db, document_id) # Use basic get_document
+        if not document:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+        # 2. Verify permissions
+        if document.user_id != current_user.id and current_user.role != "admin":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission")
+            
+        # 3. Check status - Allow reprocessing for COMPLETED or FAILED
+        from database.models.document import ProcessingStatus # Import Enum
+        if document.processing_status in [ProcessingStatus.PENDING, ProcessingStatus.PROCESSING]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Document is already being processed or pending (status: {document.processing_status.value}). Cannot reprocess yet."
+            )
+        elif document.processing_status not in [ProcessingStatus.COMPLETED, ProcessingStatus.FAILED, ProcessingStatus.NOT_PROCESSED]:
+            # If it's in some other unexpected state, maybe prevent reprocessing
+             raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Document is in an unexpected state ({document.processing_status.value}). Cannot reprocess."
+            )
+            
+        # 4. Update status to PENDING and clear error message before dispatching
+        document.processing_status = ProcessingStatus.PENDING
+        document.error_message = None # Clear previous error
+        await db.commit() # Commit the status update
+        await db.refresh(document) # Refresh to reflect the change
+        logger.info(f"Set document {document_id} status to PENDING for reprocessing.")
+
+        # 5. Dispatch the processing task to Celery
+        logger.info(f"Dispatching embedding reprocessing task to Celery for doc {document_id}.")
+        try:
+            # Import the Celery task
+            from tasks.tasks import process_document_embeddings_task
+            
+            # Send task to Celery queue with potentially new parameters
+            process_document_embeddings_task.delay(
+                document_id_str=str(document_id),
+                user_id_str=str(current_user.id),
+                model=model, 
+                chunk_size=chunk_size, 
+                chunk_overlap=chunk_overlap
+            )
+            logger.info(f"Reprocessing task for doc {document_id} successfully sent to Celery queue.")
+        except Exception as e:
+            logger.error(f"Failed to dispatch embedding reprocessing task to Celery for doc {document_id}: {e}", exc_info=True)
+            # Attempt to revert status back? Or leave as PENDING with an error?
+            # For now, raise HTTPException to indicate failure to dispatch.
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to schedule document reprocessing task."
+            )
+
+        # 6. Return 202 Accepted
+        return JSONResponse(
+            {
+                "status": "accepted",
+                "message": f"Embedding reprocessing task for document {document_id} has been scheduled.",
+                "document_id": str(document_id),
+                "model": model,
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        logger.error(f"Unexpected error in /reprocess-embeddings/{document_id}: {str(e)}\n{error_detail}")
+        raise HTTPException(status_code=500, detail=f"Internal error reprocessing embeddings: {str(e)}")
