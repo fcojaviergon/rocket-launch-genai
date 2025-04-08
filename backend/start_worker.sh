@@ -23,11 +23,20 @@ echo "Conexión a Redis OK"
 export REDIS_URL="redis://$REDIS_HOST:$REDIS_PORT/$REDIS_DB"
 export C_FORCE_ROOT=true  # Permite ejecutar Celery como root (solo para desarrollo)
 
+# Add the parent directory (project root) to PYTHONPATH 
+# This allows imports like 'from backend.core import ...' to work reliably
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
+export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
+
 echo "Iniciando worker de Celery con pool $CELERY_POOL y $CELERY_CONCURRENCY workers..."
 echo "REDIS_URL: $REDIS_URL"
+echo "PYTHONPATH set to: $PYTHONPATH"
 
 # Iniciar worker de Celery 
-celery -A tasks.worker worker \
+# Ensure the Celery app is specified correctly relative to the project root
+# Assuming your tasks.worker is in backend/tasks/worker.py
+celery -A backend.tasks.worker worker \
     --loglevel=$CELERY_LOG_LEVEL \
     --concurrency=$CELERY_CONCURRENCY \
     --pool=$CELERY_POOL \

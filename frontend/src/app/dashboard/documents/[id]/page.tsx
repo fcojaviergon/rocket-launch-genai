@@ -16,6 +16,7 @@ import { PipelineExecution } from '@/lib/types/pipeline-types';
 import { Document } from '@/lib/types/document-types';
 import { useApi } from '@/lib/hooks/api';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 
 interface DocumentDetails {
   id: string;
@@ -68,6 +69,7 @@ const getExecutionStatusType = (status: string): 'completed' | 'failed' | 'runni
 export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const searchParams = useSearchParams();
+  const { data: session, status: sessionStatus } = useSession();
   const executionId = searchParams.get('execution_id');
   const [document, setDocument] = useState<Document | null>(null);
   const [loading, setLoading] = useState(true);
@@ -139,48 +141,54 @@ export default function DocumentDetailPage() {
     }
   }, [executionId, searchParams]);
 
-  // useEffect to fetch the main document details (SIMPLIFIED)
+  // useEffect to fetch the main document details
   useEffect(() => {
-    let isMounted = true; 
+    let isMounted = true;
     const fetchDocument = async () => {
-      console.log(`(Effect Run - Detail Page SIMPLE) ID=${id}, apiClient Ready=${!!apiClient?.documents?.get}`);
-      if (!id || !apiClient?.documents?.get) {
-        console.log("(Effect Run - Detail Page SIMPLE) Waiting for ID/Client...");
-        if (!loading) setLoading(true);
-        return; 
+      console.log(`(Effect Run - Detail Page) ID=${id}, Status=${sessionStatus}, Client=${!!apiClient?.documents?.get}`);
+      
+      if (sessionStatus !== 'authenticated' || !id || !apiClient?.documents?.get) {
+        console.log("(Effect Run - Detail Page) Waiting for Auth/ID/Client...");
+        if (sessionStatus === 'loading' && !loading) setLoading(true);
+        if (sessionStatus === 'unauthenticated' && !loading) {
+             setError('Authentication required.');
+             setLoading(false);
+        }
+        return;
       }
 
-      console.log(`(Effect Run - Detail Page SIMPLE) Fetching document ID: ${id}`);
+      console.log(`(Effect Run - Detail Page) Fetching document ID: ${id}`);
       if (!loading) setLoading(true);
-      setError(null); 
+      setError(null);
 
       try {
         const data = await apiClient.documents.get(id as string) as Document;
         if (isMounted) {
-          console.log('(Effect Run - Detail Page SIMPLE) Fetch successful:', data?.id);
+          console.log('(Effect Run - Detail Page) Fetch successful:', data?.id);
           setDocument(data);
           
-          // Set executions DIRECTLY from document payload
           const initialExecutions = (data.pipeline_executions || []) as PipelineExecution[];
           setExecutions(initialExecutions);
           const hasRunning = initialExecutions.some(exec => 
             ['running', 'pending', 'processing'].includes(exec.status?.toLowerCase())
           );
           setHasRunningExecutions(hasRunning);
-          console.log('(Effect Run - Detail Page SIMPLE) Initial executions set:', initialExecutions.length, 'Has running:', hasRunning);
+          console.log('(Effect Run - Detail Page) Initial executions set:', initialExecutions.length, 'Has running:', hasRunning);
         }
       } catch (err: any) {
         if (isMounted) {
-          console.error('(Effect Run - Detail Page SIMPLE) Fetch error:', err);
-          setError(err.message || 'Could not load document');
-          setDocument(null); 
-          setExecutions([]); // Clear executions on error too
+          console.error('(Effect Run - Detail Page) Fetch error:', err);
+          if (!String(err.message).includes('Authentication is still loading')) {
+             setError(err.message || 'Could not load document');
+          }
+          setDocument(null);
+          setExecutions([]);
           setHasRunningExecutions(false);
         }
       } finally {
         if (isMounted) {
-          console.log("(Effect Run - Detail Page SIMPLE) Setting loading false.");
-          setLoading(false); 
+          console.log("(Effect Run - Detail Page) Setting loading false.");
+          setLoading(false);
         }
       }
     };
@@ -189,9 +197,9 @@ export default function DocumentDetailPage() {
 
     return () => {
       isMounted = false;
-      console.log("(Effect Cleanup - Detail Page SIMPLE) Unmounting.");
+      console.log("(Effect Cleanup - Detail Page) Unmounting.");
     };
-  }, [id, apiClient]);
+  }, [id, apiClient, sessionStatus]);
 
   // Función de callback ultra simplificada
   const handleProcessingComplete = useCallback((result?: any) => {
@@ -236,17 +244,39 @@ export default function DocumentDetailPage() {
 
   const documentTitle = document.title || "Untitled document";
 
-  // Logic to get results from the last completed execution (more robust)
+  // --- Revised Result Extraction ---
   const latestCompletedExecution = executions
     ?.filter(exec => getExecutionStatusType(exec.status) === 'completed')
     .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())[0];
 
-  // Acceso seguro a los datos anidados
-  const executionResults = latestCompletedExecution?.results;
-  const summaryData = executionResults?.summary;
-  const displayResults = summaryData?.extracted_info;
-  const pipelineNameForResult = latestCompletedExecution?.pipeline_name;
+   // --- Add these logs before the return statement ---
+   /*
+   console.log("--- Debugging Results Display ---");
+   console.log("Document Fetched:", !!document);
+   console.log("Raw Executions State (first 2):", JSON.stringify(executions?.slice(0, 2), null, 2));
+   console.log("Latest Completed Execution (found):", !!latestCompletedExecution);
+  */ 
+   if (latestCompletedExecution) {
+       console.log("Latest Completed Execution Object:", JSON.stringify(latestCompletedExecution, null, 2));
+   }
+   const executionOutput = latestCompletedExecution?.results;
+   const pipelineResults = executionOutput?.results;
+   const summaryData = pipelineResults?.summary;
+   const displayResults = summaryData?.extracted_info;
+  /*
+   console.log("Extracted executionOutput:", executionOutput ? typeof executionOutput : 'undefined');
+   console.log("Extracted pipelineResults:", pipelineResults ? typeof pipelineResults : 'undefined');
+   console.log("Extracted summaryData:", summaryData ? typeof summaryData : 'undefined');
+   console.log("Extracted displayResults (extracted_info):", displayResults ? JSON.stringify(displayResults) : displayResults);
+   console.log("Is displayResults truthy?", !!displayResults);
+   console.log("--- End Debugging ---");
+   */
+   // --- End logs ---
+  // Get the pipeline name from the inner results
+  const pipelineNameForResult = executionOutput?.results?.pipeline_name; // Access results.results.pipeline_name
+  // Execution date remains the same
   const executionDate = latestCompletedExecution?.completed_at || latestCompletedExecution?.updated_at || latestCompletedExecution?.created_at;
+  // --- End Revised Result Extraction ---
 
   return (
     <div className="container mx-auto px-4 py-8">

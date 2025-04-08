@@ -435,24 +435,34 @@ export default function ChatPage() {
         timestamp: new Date().toISOString()
       };
       
+      // Add assistant placeholder *before* starting the stream
+      const placeholderMessage: Message = {
+        id: 'streaming-placeholder', // Use a fixed ID for easy targeting
+        role: 'assistant',
+        content: '', // Start empty
+        timestamp: new Date().toISOString()
+      };
+      
       // Verify if the message already exists to avoid duplicates
       let messageExists = false;
       
       setCurrentConversation((prevConv) => {
         if (!prevConv) return null;
         
-        // Verify if the message already exists to avoid duplicates
+        // Verify if the user message already exists to avoid duplicates
         messageExists = prevConv.messages.some(m => 
           m.role === 'user' && m.content === content && Date.now() - new Date(m.timestamp).getTime() < 5000
         );
         
         if (messageExists) {
-          return prevConv; // Do not add the message if there is a recent one with the same content
+          console.log("Duplicate user message detected, skipping addition and stream");
+          return prevConv; 
         }
         
+        // Add BOTH user message and placeholder
         return {
           ...prevConv,
-          messages: [...prevConv.messages, tempMessage]
+          messages: [...prevConv.messages, tempMessage, placeholderMessage]
         };
       });
       
@@ -495,111 +505,199 @@ export default function ChatPage() {
         throw new Error(errorData.detail || `Error sending message: ${response.status}`);
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Error receiving the response in streaming');
-      }
-
-      let startTime = Date.now();
-      let lastUpdate = Date.now();
-      let receivedContent = "";
-      let conversationData: any = null;
-      let messageData: any = null;
-
-      // Function to process the stream
+      // Process stream data
       const processStream = async () => {
+        // Add null check for response.body
+        if (!response.body) {
+            console.error('Response body is null.');
+            setError('Failed to get response stream.');
+            setIsStreaming(false);
+            // Remove placeholder on error
+            setCurrentConversation(prev => {
+                if (!prev) return null;
+                const updatedMessages = prev.messages.filter(msg => msg.id !== 'streaming-placeholder');
+                return { ...prev, messages: updatedMessages };
+            });
+            return;
+        }
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = ""; // Buffer for incomplete lines/JSON
+        // Explicitly type receivedConversationId
+        let receivedConversationId: string | null = null;
+        const startTime = Date.now();
+
+        console.log('Reading stream...');
+
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              console.log("Stream completed after", Date.now() - startTime, "ms");
-              break;
-            }
-
-            // Update the timestamp of the last received data
-            lastUpdate = Date.now();
-
-            // Convert bytes to text
-            const text = new TextDecoder().decode(value);
-            const lines = text.split('\n').filter(line => line.trim() !== '');
-
-            for (const line of lines) {
-              try {
-                if (line.startsWith('data:')) {
-                  const jsonStr = line.slice(5).trim();
-                  if (jsonStr === '[DONE]') {
-                    continue;
-                  }
-                  
-                  try {
-                    const data = JSON.parse(jsonStr);
-                    
-                    // Extraer información sobre la conversación y mensajes
-                    if (data.type === 'conversation_info' && !conversationData) {
-                      console.log("Received conversation info:", data.conversation_id);
-                      conversationData = data;
-                      continue;
-                    }
-                    
-                    // Process content fragments
-                    if (data.type === 'content' && data.delta) {
-                      receivedContent += data.delta;
-                      // Update the state to show the content in real time
-                      setStreamedContent(receivedContent);
-                      continue;
-                    }
-
-                    // Process the final message
-                    if (data.type === 'message_info' && !messageData) {
-                      console.log("Received message info:", data.id);
-                      messageData = data;
-                      continue;
-                    }
-                    
-                    // Handle streaming errors
-                    if (data.type === 'error') {
-                      console.error('Error in streaming:', data.message);
-                      setError(`Error generating response: ${data.message}`);
-                      continue;
-                    }
-                  } catch (parseError) {
-                    console.error('Error parsing stream data:', parseError, jsonStr);
-                  }
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log('Stream finished reading');
+                    break;
                 }
-              } catch (e) {
-                console.error('Error processing stream data:', e);
-              }
-            }
-          }
-        } catch (error) {
-          console.error("Error during stream reading:", error);
-        }
 
-        console.log("Finalizing stream processing");
-        
-        // Only update the conversation when the stream has been completed
-        if (conversationData?.conversation_id) {
-          try {
-            console.log("Updating conversation after stream:", conversationData.conversation_id);
-            
-            // Wait a moment before loading to ensure the backend has finished processing
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // Update the list of conversations first
-            await loadConversations();
-            
-            // Load the complete conversation to ensure all messages are loaded
-            await loadConversation(conversationData.conversation_id);
-          } catch (error) {
-            console.error("Error loading the updated conversation:", error);
-          }
-        } else {
-          console.warn("No conversation ID received in the stream");
+                // Decode and add to buffer
+                buffer += decoder.decode(value, { stream: true });
+
+                // Process complete lines (JSON objects) in the buffer
+                let newlineIndex;
+                while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+                    const line = buffer.substring(0, newlineIndex).trim();
+                    buffer = buffer.substring(newlineIndex + 1);
+
+                    if (line) {
+                        try {
+                            const chunkData = JSON.parse(line);
+                            
+                            // Update last message content IN PLACE using functional update
+                            if (chunkData.content) {
+                                setCurrentConversation(prev => {
+                                    if (!prev || prev.messages.length === 0) return prev;
+                                    const lastMessageIndex = prev.messages.length - 1;
+                                    // Ensure the last message is the one we are streaming into (check role or id)
+                                    if (prev.messages[lastMessageIndex].role === 'assistant' && prev.messages[lastMessageIndex].id === 'streaming-placeholder') {
+                                        const updatedMessages = [...prev.messages];
+                                        updatedMessages[lastMessageIndex] = {
+                                            ...updatedMessages[lastMessageIndex],
+                                            content: updatedMessages[lastMessageIndex].content + chunkData.content
+                                        };
+                                        return { ...prev, messages: updatedMessages };
+                                    }
+                                    return prev; // Return previous state if last message isn't the target
+                                });
+                            }
+                            
+                            // Handle Conversation ID (same as before)
+                            if (chunkData.conversation_id && !receivedConversationId) {
+                                receivedConversationId = chunkData.conversation_id;
+                                console.log(`Received conversation ID: ${receivedConversationId}`);
+                                // Explicitly check prev before updating ID
+                                setCurrentConversation(prev => {
+                                    if (!prev) return null; // Should not happen if ID is received, but safeguard
+                                    const newId = receivedConversationId ?? prev.id;
+                                    // Check if ID actually changed before creating new object
+                                    if (newId !== prev.id) {
+                                        return { ...prev, id: newId }; // Only update ID if it changed
+                                    }
+                                    return prev; // Otherwise, no change needed here (messages updated separately)
+                                });
+                            }
+                        } catch (parseError) {
+                            console.error('Error parsing stream chunk JSON:', parseError, 'Chunk:', line);
+                        }
+                    }
+                }
+            }
+
+             // Process any remaining buffer content (optional, but good practice)
+            if (buffer.trim()) {
+                 console.warn("Stream ended with partial data in buffer:", buffer);
+                 try {
+                    const chunkData = JSON.parse(buffer.trim());
+                    // Update last message content IN PLACE
+                    if (chunkData.content) {
+                         setCurrentConversation(prev => {
+                            // Same update logic as inside the loop
+                            if (!prev || prev.messages.length === 0) return prev;
+                            const lastMessageIndex = prev.messages.length - 1;
+                            if (prev.messages[lastMessageIndex].role === 'assistant' && prev.messages[lastMessageIndex].id === 'streaming-placeholder') {
+                                const updatedMessages = [...prev.messages];
+                                updatedMessages[lastMessageIndex] = {
+                                    ...updatedMessages[lastMessageIndex],
+                                    content: updatedMessages[lastMessageIndex].content + chunkData.content
+                                };
+                                return { ...prev, messages: updatedMessages };
+                            }
+                            return prev;
+                        });
+                    }
+                     if (chunkData.conversation_id) {
+                         const finalReceivedId = chunkData.conversation_id;
+                         if (finalReceivedId && (!currentConversation?.id || currentConversation.id === 'temp-new')) { 
+                             setCurrentConversation(prev => {
+                                 if (!prev) {
+                                     return { id: finalReceivedId, title: "New Chat", messages: [], created_at: "", updated_at: "" };
+                                 }
+                                 return { ...prev, id: finalReceivedId };
+                             });
+                         }
+                     }
+                 } catch (e) {
+                     console.error("Error parsing final buffer content:", e);
+                 }
+            }
+
+        } catch (error) {
+            console.error('Error reading stream:', error);
+            setError('Error processing the response.');
+            // Remove placeholder on error
+            setCurrentConversation(prev => {
+                if (!prev) return null;
+                const updatedMessages = prev.messages.filter(msg => msg.id !== 'streaming-placeholder');
+                return { ...prev, messages: updatedMessages };
+            });
+        } finally {
+            const duration = Date.now() - startTime;
+            console.log(`Stream completed after ${duration} ms`);
+            setIsStreaming(false);
+            setIsLoading(false);
+
+            // REMOVED block that added accumulatedContent separately
+
+            console.log('Finalizing stream processing');
+            // Ensure the conversation ID is set if this was a new chat (Keep this part)
+             if (receivedConversationId && (!currentConversation?.id || currentConversation.id === 'temp-new')) { 
+                  console.log('Setting final conversation ID:', receivedConversationId);
+                 setCurrentConversation(prev => {
+                     if (!prev) return null;
+                     // Create a new messages array for the final state
+                     const finalMessages = [...prev.messages]; 
+                     const lastMessageIndex = finalMessages.length - 1;
+                     if (lastMessageIndex >= 0 && finalMessages[lastMessageIndex].id === 'streaming-placeholder') {
+                         const lastMessage = finalMessages[lastMessageIndex];
+                         if (!lastMessage.content || lastMessage.content.trim() === "") {
+                             finalMessages.pop(); 
+                             console.warn("Removing empty streaming placeholder message.");
+                         } else {
+                             // Give placeholder a permanent ID
+                             finalMessages[lastMessageIndex] = { ...lastMessage, id: `assistant-${Date.now()}` };
+                         }
+                     }
+                      // Return the final state object
+                     return { ...prev, messages: finalMessages }; 
+                 });
+             } else if (!receivedConversationId) {
+                 console.warn('No conversation ID received in the stream');
+             }
+             
+             // Update placeholder message ID or remove if empty after stream ends
+             setCurrentConversation(prev => {
+                 if (!prev) return null;
+                 const messages = prev.messages;
+                 if (messages.length === 0) return prev;
+                 
+                 const lastMessageIndex = messages.length - 1;
+                 const lastMessage = messages[lastMessageIndex];
+
+                 // Check if the last message is the placeholder we were streaming into
+                 if (lastMessage && lastMessage.id === 'streaming-placeholder') {
+                     const updatedMessages = [...messages];
+                     // If placeholder ended up empty, remove it
+                     if (!lastMessage.content || lastMessage.content.trim() === "") {
+                         updatedMessages.pop(); 
+                         console.warn("Removing empty streaming placeholder message.");
+                     } else {
+                         // Otherwise, give it a permanent ID
+                         updatedMessages[lastMessageIndex] = { ...lastMessage, id: `assistant-${Date.now()}` };
+                     }
+                     // Update state: Ensure the updated state conforms to Conversation | null
+                     setCurrentConversation(prev => prev ? { ...prev, id: prev.id, messages: updatedMessages } : null);
+                 }
+                 return prev; // No change if last message wasn't the placeholder
+             });
         }
-        
-        setIsStreaming(false);
-        setIsLoading(false);
-        setStreamedContent("");  // Clean the streaming content
       };
 
       processStream();

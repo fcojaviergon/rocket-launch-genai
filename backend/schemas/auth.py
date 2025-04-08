@@ -1,6 +1,7 @@
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
+import uuid
 
 class UserBase(BaseModel):
     """Base schema for users"""
@@ -38,7 +39,7 @@ class UserPasswordUpdate(BaseModel):
 
 class UserResponse(UserBase):
     """Schema for user responses"""
-    id: str
+    id: uuid.UUID
 
     class Config:
         from_attributes = True
@@ -48,6 +49,15 @@ class UserListResponse(UserResponse):
     """Schema to list users with additional information"""
     created_at: datetime
     role: str
+
+
+class PaginatedUserResponse(BaseModel):
+    """Schema for paginated list of users"""
+    items: List[UserListResponse] # Use UserListResponse for items
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 class Token(BaseModel):

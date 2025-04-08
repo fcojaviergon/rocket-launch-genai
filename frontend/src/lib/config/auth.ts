@@ -40,27 +40,34 @@ async function refreshAccessToken(token: JWT): Promise<JWT> {
   try {
     console.log('Attempting to refresh token with refreshToken: ', token.refreshToken?.substring(0, 10) + '...');
     
-    // Asegúrese de que NEXTAUTH_URL esté configurado correctamente en sus variables de entorno
-    // o use window.location.origin si está disponible
-    const baseUrl = process.env.NEXTAUTH_URL || 
-      (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
-      
-    console.log(`Using base URL for refresh: ${baseUrl}`);
+    // --- Use the correct Backend API URL --- 
+    const backendApiUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+    if (!backendApiUrl) {
+      console.error("FATAL: NEXT_PUBLIC_BACKEND_URL is not defined. Cannot refresh token.");
+      return { ...token, error: "ConfigError" };
+    }
+    const refreshUrl = `${backendApiUrl}/api/v1/auth/refresh`; // Assuming v1
+    console.log(`Using refresh URL: ${refreshUrl}`);
+    // --- End URL Fix ---
     
-    const response = await fetch(`${baseUrl}/api/auth/refresh`, {
+    const response = await fetch(refreshUrl, { // Use the correct backend refresh URL
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: token.refreshToken }), // Parámetro esperado por nuestra API route
-      cache: 'no-store' // Importante: no cachear solicitudes de refresh
+      body: JSON.stringify({ refresh_token: token.refreshToken }), // Use snake_case
+      cache: 'no-store' 
     });
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       console.error(`Error refreshing token: ${response.status} ${response.statusText}`, errorData);
-      return {
-        ...token,
-        error: "RefreshTokenError"
-      };
+      // Log out if refresh fails definitively (e.g., 401/403 from refresh endpoint)
+      if (response.status === 401 || response.status === 403) {
+           console.error("Refresh token invalid or expired. Setting RefreshTokenError.")
+           return { ...token, error: "RefreshTokenError" }; 
+      } else {
+           // For other errors (e.g., 500), maybe retry later? For now, treat as error.
+           return { ...token, error: "RefreshFailed" }; 
+      }
     }
 
     const data = await response.json();
@@ -89,7 +96,7 @@ async function refreshAccessToken(token: JWT): Promise<JWT> {
     console.error('Exception during token refresh:', error);
     return {
       ...token,
-      error: "RefreshTokenError"
+      error: "RefreshTokenError" // Treat exceptions as RefreshTokenError
     };
   }
 }

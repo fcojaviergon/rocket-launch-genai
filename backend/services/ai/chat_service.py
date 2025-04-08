@@ -191,12 +191,15 @@ class ChatService:
                 raise RuntimeError("ChatService is not configured with an LLM client.")
 
             # Call the LLM client via the interface with stream=True
-            return self.llm_client.generate_chat_completion(
+            # AWAIT the call to get the async generator
+            stream_generator = await self.llm_client.generate_chat_completion(
                 messages=messages,
                 model=model or self.default_model,
                 temperature=temperature,
                 stream=True
             )
+            # Return the generator itself
+            return stream_generator
             
         except Exception as e:
             print(f"Error generating streaming response: {str(e)}")
@@ -217,69 +220,80 @@ class ChatService:
             if not self.document_service:
                 raise RuntimeError("DocumentService is not available in ChatService for RAG.")
             if not self.llm_client:
-                raise RuntimeError("OpenAI client is not available in ChatService for RAG.")
+                raise RuntimeError("LLM client is not available in ChatService for RAG.")
 
-            # Use DocumentService for semantic search
-            # Use the injected DocumentService instance
-            # Search relevant documents
-            similar_docs = await self.document_service.rag_search(
-                db=db, 
-                query=query, 
+            # Search relevant document CHUNKS across all user documents
+            # search_similar_documents now returns List[Dict] where each Dict is a CHUNK
+            similar_chunks = await self.document_service.search_similar_documents(
+                db=db,
+                query_embedding=await self.document_service.generate_query_embedding(query), # Generate query embedding
                 user_id=user_id,
-                limit=3
+                limit=5,  # Fetch top 5 chunks across all docs
+                min_similarity=0.2, # Filter at DB level
+                model="text-embedding-3-small" # Ensure model consistency
+                # document_id is None here, searching all docs
             )
-            
-            # Format sources and build context
+
+            # Format sources and build context directly from the returned chunks
             sources = []
             context_parts = []
-            
-            for doc_info in similar_docs:
-                document = doc_info["document"]
-                similarity = doc_info["similarity"]
-                chunks = doc_info.get("chunks", [])
-                
-                if similarity > 0.2:  # Only use documents with high similarity
-                    # Use the text of the chunks if available, or the complete content
-                    if chunks:
-                        # Sort chunks by similarity and use the best ones
-                        chunks.sort(key=lambda x: x["similarity"], reverse=True)
-                        for chunk in chunks[:2]:  # Use the 2 most relevant chunks
-                            context_parts.append(f"[{document['title']} - Extract {chunk['chunk_index']}]\n{chunk['chunk_text']}")
-                    else:
-                        context_parts.append(f"[{document['title']}]\n{document['content']}")
-                    
-                    sources.append({
-                        "document_name": document["title"] or "No title",
-                        "document_type": document["type"] or "UNKNOWN",  # Default value if None
-                        "relevance": similarity
-                    })
-            
+            processed_docs = set() # Keep track of documents included in sources
+
+            # No need to sort again by similarity here, DB already did it.
+            # Directly iterate over the chunks returned by the search service.
+            for chunk_info in similar_chunks: # Each item is a chunk dictionary
+                similarity = chunk_info["similarity"]
+                chunk_text = chunk_info.get("chunk_text")
+                document_meta = chunk_info.get("document", {}) # Get nested document metadata
+
+                # Add chunk to context if text exists and similarity is sufficient
+                # (DB already filtered by min_similarity, but keep check just in case)
+                if chunk_text and similarity > 0.2:
+                    # Limit context length if needed, e.g., by number of chunks or total chars
+                    if len(context_parts) < 3: # Example: Use top 3 chunks for context
+                       context_parts.append(f"[{document_meta.get('title', 'Unknown Title')} - Chunk {chunk_info.get('chunk_index', 'N/A')}]\n{chunk_text}")
+
+                # Add document to sources only once, using the highest similarity chunk for that doc
+                doc_id = document_meta.get("id")
+                if doc_id and doc_id not in processed_docs:
+                     sources.append({
+                         "document_name": document_meta.get("title", "No title"),
+                         "document_type": document_meta.get("type", "UNKNOWN"),
+                         "relevance": similarity, # Use similarity of the first chunk encountered for this doc
+                         "document_id": doc_id
+                     })
+                     processed_docs.add(doc_id)
+
+
             if not context_parts:
+                # This happens if search_similar_documents returned 0 items
+                # or if all returned items had null/empty chunk_text
+                logger.warning(f"RAG context is empty for query: '{query}' and user {user_id}.")
                 return {
-                    "answer": "No encontré documentos relevantes para responder tu pregunta.",
+                    "answer": "I did not find relevant information in the documents to answer your question.",
                     "sources": [],
                     "conversation_id": conversation_id,
                     "created_at": datetime.now()
                 }
-                
+
             context = "\n\n".join(context_parts)
-            
+
             # Generate response
-            response = await self.llm_client.generate_chat_completion(
+            # Use the LLM client interface
+            answer = await self.llm_client.generate_chat_completion(
                 model= self.default_model, # Use default model for RAG response generation for now
                 messages=[
-                    {"role": "system", "content": f"Responde la pregunta del usuario basándote únicamente en el siguiente contexto:\n\n{context}\n\nNo añadas información que no esté en el contexto. Si la respuesta no está en el contexto, indica que no puedes responder con la información proporcionada."},
+                    {"role": "system", "content": f"Answer the user's question based solely on the following context:\n\n{context}\n\nDo not add information that is not in the context. If the answer is not in the context, indicate that you cannot respond with the information provided."},
                     {"role": "user", "content": query}
                 ],
-                temperature=0.3 # Lower temperature for more factual response
+                temperature=0.3, # Lower temperature for more factual response
+                stream=False # Ensure stream is False for this method
             )
-            
-            answer = response
-            
+
             # If there is a conversation_id, save the exchange
             if conversation_id:
                 await self.save_rag_exchange(db, conversation_id, query, answer, sources)
-                
+
             return {
                 "answer": answer,
                 "sources": sources,
@@ -287,8 +301,8 @@ class ChatService:
                 "created_at": datetime.now()
             }
         except Exception as e:
-            print(f"Error in generate_rag_response: {str(e)}")
-            raise
+            logger.error(f"Error in generate_rag_response: {str(e)}", exc_info=True) # Log full traceback
+            raise # Re-raise exception for endpoint handler
 
     async def save_rag_exchange(
         self,
@@ -361,12 +375,11 @@ class ChatService:
 
         # 5. Stream response chunks and collect full response
         full_assistant_response = ""
-        async for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                full_assistant_response += content
+        async for content_chunk in stream:
+            if content_chunk:
+                full_assistant_response += content_chunk
                 # Yield chunk in desired format (e.g., JSON string)
-                yield json.dumps({"content": content, "conversation_id": str(conversation_id)}) + "\n"
+                yield json.dumps({"content": content_chunk, "conversation_id": str(conversation_id)}) + "\n"
         
         # Add a final newline or marker if needed by client
         # yield "\n"

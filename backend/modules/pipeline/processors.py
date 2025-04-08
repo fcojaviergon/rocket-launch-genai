@@ -504,40 +504,46 @@ class EmbeddingProcessor(BaseProcessor):
             logger.warning(f"{self.name} initialized without LLM client. Embedding generation will fail.")
 
     def _chunk_text(self, text: str) -> List[str]:
-        """Divide text into chunks based on configured size and overlap"""
-        # Simple split by paragraph and then words for now, respecting size
-        # TODO: Implement more robust chunking (e.g., using RecursiveCharacterTextSplitter)
+        """Split text into chunks based on character count with overlap."""
         if not text:
             return []
-            
-        max_len = self.chunk_size
+
+        chunk_size = self.chunk_size
+        chunk_overlap = self.chunk_overlap
+
+        # Ensure overlap is not larger than chunk size
+        if chunk_overlap >= chunk_size:
+            logger.warning(f"Chunk overlap ({chunk_overlap}) is greater than or equal to chunk size ({chunk_size}). Setting overlap to {chunk_size // 2}.")
+            chunk_overlap = chunk_size // 2 # Adjust to a reasonable default like half the chunk size
+
+        logger.info(f"Chunking text with character chunk_size={chunk_size}, chunk_overlap={chunk_overlap}")
+
         chunks = []
-        current_chunk = ""
-        paragraphs = text.split('\n')
-        
-        for para in paragraphs:
-            if not para.strip():
-                continue
-            words = para.split()
-            for word in words:
-                if len(current_chunk) + len(word) + 1 > max_len:
-                    if current_chunk:
-                        chunks.append(current_chunk)
-                    current_chunk = word
-                else:
-                    if current_chunk:
-                        current_chunk += " " + word
-                    else:
-                        current_chunk = word
-            # Add remaining part of paragraph to chunk (might push it over limit slightly)
-            if current_chunk and not current_chunk.endswith(word): 
-                 current_chunk += " " + word # Add last word if needed
-        
-        if current_chunk:
-            chunks.append(current_chunk)
-            
-        # Overlap logic would need to be added if using a different strategy
-        logger.info(f"Chunked text into {len(chunks)} chunks (simple strategy).")
+        start_index = 0
+        text_len = len(text)
+
+        while start_index < text_len:
+            end_index = min(start_index + chunk_size, text_len)
+            chunk = text[start_index:end_index]
+            chunks.append(chunk)
+
+            # Move start_index for the next chunk, considering overlap
+            # If the next step would be 0 or negative, we are done
+            step = chunk_size - chunk_overlap
+            if step <= 0:
+                 logger.warning(f"Chunk step size is zero or negative (chunk_size={chunk_size}, chunk_overlap={chunk_overlap}). Breaking chunking loop.")
+                 break # Avoid infinite loop if overlap is too large
+
+            start_index += step
+
+            # Break if start_index hasn't advanced (e.g., very small step and end of text)
+            # This prevents potential infinite loops in edge cases.
+            if start_index >= end_index and end_index < text_len:
+                 logger.warning(f"Chunking loop detected potential stall (start_index={start_index}, end_index={end_index}, text_len={text_len}). Breaking.")
+                 break
+
+
+        logger.info(f"Chunked text into {len(chunks)} chunks using character-based splitting with overlap.")
         return chunks
 
     async def process(self, document: Document, context: Dict[str, Any]) -> Dict[str, Any]:

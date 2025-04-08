@@ -257,7 +257,6 @@ class PipelineService:
             status=ExecutionStatus.PENDING,
             parameters=execution_data.parameters,
             user_id=user.id,
-            task_id=task_id # Store Celery task ID if provided
         )
         db.add(execution)
         try:

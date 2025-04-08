@@ -144,20 +144,13 @@ class PipelineExecutor:
             processor = get_processor(processor_type, step_config, llm_client=self.llm_client)
             
             # Execute the processor
-            # Pass the Document object if processor is 'embedding', otherwise pass content string
-            if processor_type == "embedding":
-                 if hasattr(processor, 'process'): # Check if processor has the method
-                     # Ensure the embedding processor's process method expects Document object
-                     result = await processor.process(document, context) 
-                 else:
-                     result = {"error": f"Embedding processor '{processor_type}' is missing the process method."}
-            elif hasattr(processor, 'process'):
-                # Regular processors get the document content as string
-                content_to_process = document.content if document.content else ""
-                result = await processor.process(content_to_process, context)
+            # ALWAYS pass the full Document object to the processor's process method.
+            # Individual processors are responsible for accessing the attributes they need (e.g., content, file_path, id).
+            if hasattr(processor, 'process'):
+                result = await processor.process(document, context)
             else:
                  result = {"error": f"Processor '{processor_type}' is missing the process method."}
-
+            
             # Log the result (excluding large keys)
             log_result = {k: v for k, v in result.items() if k not in ('embeddings', 'chunks_text')}
             #logger.info(f"Step '{step_name}' result: {log_result}")

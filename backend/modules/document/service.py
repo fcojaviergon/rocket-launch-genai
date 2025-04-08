@@ -11,6 +11,8 @@ from pgvector.sqlalchemy import Vector
 from openai import AsyncOpenAI
 import logging
 import httpx
+import json # Import json for serialization check
+from datetime import datetime # Import datetime
 from sqlalchemy.sql import text
 from sqlalchemy.sql.expression import bindparam
 from sqlalchemy.orm import selectinload
@@ -20,8 +22,9 @@ import aiofiles
 
 # Import the LLM interface
 from core.llm_interface import LLMClientInterface
-from database.models.document import Document, DocumentEmbedding
-from schemas.document import DocumentCreate, DocumentUpdate
+from database.models.document import Document, DocumentEmbedding, DocumentProcessingResult # Ensure ProcessingResult model is imported
+from database.models.pipeline import PipelineExecution, Pipeline # Import pipeline models
+from schemas.document import DocumentCreate, DocumentUpdate, DocumentResponse, DocumentProcessingResultResponse, PipelineExecutionResponse # Import necessary schemas
 from core.config import settings
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -126,6 +129,22 @@ class DocumentService:
         db.add(document)
         await db.commit()
         await db.refresh(document)
+        
+        # --- Trigger asynchronous embedding processing --- 
+        try:
+            await self.process_document_embeddings_async(document.id)
+            logger.info(f"Successfully enqueued embedding task for document {document.id}")
+            # Optionally update status right away, though the task might do it too
+            # document.processing_status = ProcessingStatus.PENDING # Assuming enum exists
+            # await db.commit() # Commit status update if done here
+        except Exception as task_error:
+            # Log the error but don't fail the document creation
+            logger.error(f"Failed to enqueue embedding task for document {document.id}: {task_error}", exc_info=True)
+            # Optionally update status to reflect the failure to enqueue
+            # document.processing_status = ProcessingStatus.FAILED 
+            # await db.commit()
+        # --- End Trigger --- 
+        
         return document
     
     async def get_document(self, db: AsyncSession, document_id: UUID) -> Optional[Document]:
@@ -149,139 +168,119 @@ class DocumentService:
         )
         return result.scalar_one_or_none()
     
-    async def get_document_with_details(self, db: AsyncSession, document_id: UUID) -> Optional[Document]:
+    async def get_document_with_details(self, db: AsyncSession, document_id: UUID) -> Optional[DocumentResponse]:
         """
-        Get a document by its ID, eagerly loading relationships needed for detailed views.
+        Get a document by its ID, with related data, and synthesize processing results.
+        Returns a DocumentResponse Pydantic model, not the ORM object.
 
         Args:
             db: Asynchronous database session
             document_id: ID of the document to get
 
         Returns:
-            Optional[Document]: Document found with details, or None
+            Optional[DocumentResponse]: Populated response schema or None if not found.
         """
-        # Import PipelineExecution here if not already imported globally or locally
-        from database.models.pipeline import PipelineExecution, Pipeline
-
-        # Define the query with eager loading options
+        # Fetch the ORM object with eager loading
         query = (
             select(Document)
             .filter(Document.id == document_id)
             .options(
-                selectinload(Document.embeddings), # Eager load embeddings
-                selectinload(Document.processing_results), # Eager load processing results
-                selectinload(Document.pipeline_executions).options( # Eager load executions...
-                    selectinload(PipelineExecution.pipeline) # ...and their related pipeline
+                selectinload(Document.embeddings),
+                selectinload(Document.processing_results),
+                selectinload(Document.pipeline_executions).options(
+                    selectinload(PipelineExecution.pipeline)
                 )
             )
         )
-
-        # Execute the query
         result = await db.execute(query)
+        document_orm = result.scalar_one_or_none()
 
-        # Return the single result or None
-        document = result.scalar_one_or_none()
+        if not document_orm:
+            return None
 
-        # Potentially synthesize processing_results here if needed as part of the service logic
-        # Or leave it to the schema/API layer if preferred
-        if document:
-             # --- Synthesize processing_results from latest pipeline execution if needed ---
-             if (not document.processing_results or len(document.processing_results) == 0) and document.pipeline_executions:
-                 
-                 # Create dictionaries from execution objects for easier processing
-                 executions_data = []
-                 for execution in document.pipeline_executions:
-                      pipeline_name = execution.pipeline.name if execution.pipeline else "Unknown"
-                      executions_data.append({
-                         "id": execution.id,
-                         "pipeline_id": execution.pipeline_id,
-                         "document_id": execution.document_id,
-                         "user_id": execution.user_id,
-                         "status": execution.status.value if hasattr(execution.status, 'value') else str(execution.status),
-                         "started_at": execution.started_at,
-                         "completed_at": execution.completed_at,
-                         "created_at": execution.created_at,
-                         "updated_at": execution.updated_at,
-                         "pipeline_name": pipeline_name,
-                         "results": execution.results, # Keep results as they are (likely dict)
-                         "parameters": execution.parameters,
-                         "error_message": execution.error_message
-                     })
+        # --- Start Synthesis Logic --- 
+        final_processing_results: Optional[List[DocumentProcessingResultResponse]] = None
 
-                 completed_executions = [exec_dict for exec_dict in executions_data 
-                                          if exec_dict["status"] == "completed" and exec_dict.get("results")]
+        # 1. Check for existing results in the database
+        if document_orm.processing_results:
+            logger.debug(f"Document {document_id}: Using DB processing results.")
+            # Convert ORM results to Pydantic response models
+            final_processing_results = [
+                DocumentProcessingResultResponse.model_validate(res)
+                for res in document_orm.processing_results
+            ]
+        # 2. If no DB results, try synthesizing from executions
+        elif document_orm.pipeline_executions:
+            logger.debug(f"Document {document_id}: No DB results, attempting synthesis from executions.")
+            # Convert ORM executions to Pydantic response models for easier handling
+            executions_data = [
+                 PipelineExecutionResponse.model_validate(exec)
+                 for exec in document_orm.pipeline_executions
+            ]
+            completed_executions = [
+                exec_data for exec_data in executions_data
+                if exec_data.status == "completed" and isinstance(exec_data.results, dict)
+            ]
+            if completed_executions:
+                logger.debug(f"Document {document_id}: Found {len(completed_executions)} completed executions with dict results.")
+                try:
+                    latest_execution = max(
+                        completed_executions,
+                        key=lambda x: x.completed_at or x.created_at or datetime.min
+                    )
+                    logger.debug(f"Document {document_id}: Latest execution {latest_execution.id} completed at {latest_execution.completed_at}")
 
-                 if completed_executions:
-                     latest_execution = max(completed_executions, key=lambda x: x["completed_at"] if x["completed_at"] else x["created_at"])
-                     
-                     if latest_execution.get("results"):
-                         # We need a ProcessingResult object or something compatible with the schema
-                         # Let's assume we need to construct a dictionary matching ProcessingResultResponse
-                         # Import necessary types/models if needed
-                         import uuid # Ensure uuid is imported
-                         import json # Ensure json is imported
-                         # DocumentProcessingResult ORM class is not needed here as we create a dict
+                    # Parse nested Celery task results
+                    celery_task_output = latest_execution.results or {}
+                    pipeline_executor_output = celery_task_output.get("results", {})
+                    pipeline_summary_obj = pipeline_executor_output.get("summary", {})
+                    extracted_info = pipeline_summary_obj.get("extracted_info", {})
 
-                         result_data = latest_execution.get("results") or {}
-                         summary = None
-                         keywords = None
-                         token_count = None
-                         process_metadata = {}
+                    if not extracted_info and not pipeline_executor_output.get("errors"):
+                        logger.warning(f"Document {document_id}, Execution {latest_execution.id}: No extracted_info found, cannot synthesize.")
+                    elif pipeline_executor_output.get("errors"):
+                         logger.warning(f"Document {document_id}, Execution {latest_execution.id}: Pipeline execution failed, not synthesizing.")
+                    else:
+                        # Extract data for synthesized result
+                        summary = extracted_info.get("summary")
+                        keywords = extracted_info.get("keywords")
+                        token_count = pipeline_executor_output.get("total_tokens_used")
+                        process_metadata = {}
+                        for key, value in extracted_info.items():
+                             if key not in ["summary", "keywords"] and value is not None:
+                                  try: json.dumps(value); process_metadata[key] = value
+                                  except (TypeError, OverflowError): process_metadata[key] = f"[Unserializable: {type(value).__name__}]"
 
-                         if isinstance(result_data.get("summary"), dict):
-                             summary = result_data["summary"].get("summary")
-                             process_metadata["summary_info"] = result_data["summary"]
-                         elif isinstance(result_data.get("summary"), str):
-                             summary = result_data["summary"]
-                         
-                         if isinstance(result_data.get("keywords"), list):
-                             keywords = result_data["keywords"]
+                        # Construct the Pydantic model for the synthesized result
+                        synthesized_result = DocumentProcessingResultResponse(
+                            id=None,
+                            document_id=document_id,
+                            pipeline_name=pipeline_executor_output.get("pipeline_name", "Unknown Pipeline"),
+                            summary=summary,
+                            keywords=keywords,
+                            token_count=token_count,
+                            process_metadata=process_metadata,
+                            created_at=latest_execution.completed_at or latest_execution.created_at or datetime.now(),
+                            updated_at=latest_execution.completed_at or latest_execution.created_at or datetime.now(),
+                        )
+                        logger.debug(f"Document {document_id}: Synthesized result created.")
+                        final_processing_results = [synthesized_result]
+                except Exception as e:
+                     logger.error(f"Document {document_id}: Error during synthesis logic in service: {e}", exc_info=True)
+            else:
+                 logger.debug(f"Document {document_id}: No suitable completed executions found for synthesis.")
+        else:
+             logger.debug(f"Document {document_id}: No DB results and no pipeline executions found for synthesis.")
+        # --- End Synthesis Logic --- 
 
-                         if "tokens_used" in result_data:
-                             token_count = result_data.get("tokens_used")
+        # Manually construct the DocumentResponse Pydantic model
+        document_response = DocumentResponse.model_validate(document_orm)
+        # Assign the final (DB or synthesized) processing results
+        document_response.processing_results = final_processing_results
+        # Ensure pipeline executions are also assigned (model_validate should handle this via from_attributes)
+        # document_response.pipeline_executions = [PipelineExecutionResponse.model_validate(e) for e in document_orm.pipeline_executions] if document_orm.pipeline_executions else None
 
-                         for key, value in result_data.items():
-                             if key not in ["summary", "keywords", "tokens_used"] and value is not None:
-                                 try:
-                                     json.dumps(value)
-                                     process_metadata[key] = value
-                                 except TypeError:
-                                     process_metadata[key] = str(value)
-
-                         # IMPORTANT: We need to create an object that matches the expected type 
-                         # for the 'processing_results' relationship in the Document model.
-                         # If it expects ProcessingResult ORM objects, we might need to create one.
-                         # If the schema just expects dicts, creating a dict is fine.
-                         # Let's assume for now we are creating a dict structure similar to the schema.
-                         # This might need adjustment based on the actual ORM relationship type. 
-                         synthesized_result = {
-                              # "id": uuid.uuid4(), # ORM usually handles ID generation 
-                              "document_id": document.id,
-                              "pipeline_name": latest_execution["pipeline_name"],
-                              "summary": summary,
-                              "keywords": keywords or [],
-                              "token_count": token_count,
-                              "process_metadata": process_metadata,
-                              # Timestamps might need conversion if expected as datetime objects
-                              "created_at": latest_execution["completed_at"] or latest_execution["created_at"],
-                              "updated_at": latest_execution["updated_at"]
-                         }
-                         
-                         # If the relationship expects ORM objects:
-                         # temp_processing_result = ProcessingResult(**synthesized_result)
-                         # document.processing_results = [temp_processing_result] 
-                         
-                         # If the schema/relationship can handle dicts directly (less common for ORM relationships):
-                         # We might need to adjust how this is assigned based on DocumentResponse schema definition
-                         document.processing_results = [synthesized_result] # Assign list with synthesized dict
-                         logger.info(f"Synthesized processing_results for document {document_id} from pipeline execution.")
-             # -----------------------------------------------------------------------------
-
-             logger.debug(f"Retrieved document {document_id} with details.")
-             # Example: Synthesize logic could go here or be called from here
-             # document = self._synthesize_processing_results(document)
-
-        return document
+        return document_response
     
     async def get_user_documents(
         self,
@@ -290,7 +289,7 @@ class DocumentService:
         skip: int = 0,
         limit: int = 100,
         type: Optional[str] = None
-    ) -> List[Document]:
+    ) -> List[DocumentResponse]:
         """
         Get all documents of a user
         
@@ -302,7 +301,7 @@ class DocumentService:
             type: Document type to filter
             
         Returns:
-            List[Document]: List of documents
+            List[DocumentResponse]: List of documents
         """
         query = select(Document).filter(Document.user_id == user_id)
         
@@ -320,7 +319,9 @@ class DocumentService:
         query = query.offset(skip).limit(limit)
         
         result = await db.execute(query)
-        return list(result.scalars().all())
+        documents_orm = result.scalars().all()
+        # Convert ORM objects to Pydantic models before returning
+        return [DocumentResponse.model_validate(doc) for doc in documents_orm]
     
     async def update_document(
         self,
@@ -419,23 +420,21 @@ class DocumentService:
         self,
         db: AsyncSession,
         document_id: UUID,
-        embeddings: List[List[float]],
-        chunks_text: List[str],
-        model: str = "text-embedding-3-small"
-    ) -> List[DocumentEmbedding]:
+        embeddings_payload: Dict[str, Any], # Change to Dict for flexibility or use a specific schema
+        batch_size: int = 100
+    ) -> None:
         """
         Save the embeddings of a document in the database
         
         Args:
             db: Asynchronous database session
             document_id: ID of the document
-            embeddings: List of embedding vectors
-            chunks_text: List of texts corresponding to each embedding
-            model: Model used to generate the embeddings
-            
-        Returns:
-            List[DocumentEmbedding]: List of saved embeddings
+            embeddings_payload: Dictionary containing embeddings and chunks_text
+            batch_size: Number of embeddings to save in each batch
         """
+        embeddings = embeddings_payload.get('embeddings')
+        chunks_text = embeddings_payload.get('chunks_text')
+        
         # Verify that the document exists
         query = select(Document).where(Document.id == document_id)
         result = await db.execute(query)
@@ -452,7 +451,7 @@ class DocumentService:
         # To avoid duplicates if processed again
         delete_query = select(DocumentEmbedding).where(
             (DocumentEmbedding.document_id == document_id) &
-            (DocumentEmbedding.model == model)
+            (DocumentEmbedding.model == self.default_embedding_model)
         )
         result = await db.execute(delete_query)
         existing_embeddings = result.scalars().all()
@@ -465,7 +464,7 @@ class DocumentService:
             # Create the embedding model
             db_embedding = DocumentEmbedding(
                 document_id=document_id,
-                model=model,
+                model=self.default_embedding_model,
                 embedding=embedding,
                 chunk_index=i,
                 chunk_text=chunk_text
@@ -480,127 +479,84 @@ class DocumentService:
         return saved_embeddings
     
     async def search_similar_documents(
-        self,
-        db: AsyncSession,
-        query_embedding: List[float],
+        self, 
+        db: AsyncSession, 
+        query_embedding: List[float], 
+        user_id: UUID, 
+        limit: int = 5, 
+        min_similarity: float = 0.5,
         model: str = "text-embedding-3-small",
-        limit: int = 5,
-        min_similarity: float = 0.7,
-        user_id: Optional[UUID] = None,
-        document_id: Optional[UUID] = None
-    ) -> List[Dict[str, Any]]:
+        document_id: Optional[UUID] = None # Add optional document_id filter
+    ) -> List[Dict[str, Any]]: # Return list of dicts representing chunks
         """
-        Search similar documents to an embedding vector
-        
-        Args:
-            db: Asynchronous database session
-            query_embedding: Embedding vector of the query
-            model: Embedding model to use
-            limit: Maximum number of results
-            min_similarity: Minimum similarity to consider a result (0-1)
-            user_id: ID of the owner user (to filter by user)
-            document_id: Optional ID of a specific document to search within
-            
-        Returns:
-            List[Dict[str, Any]]: List of similar documents with their score
+        Search similar document chunks based on embedding vector.
+        Returns a list of chunks with their document info and similarity.
         """
         if not query_embedding:
             raise ValueError("The query embedding vector cannot be empty")
-        
+
         try:
-            # Convert the vector to its representation as a string for PostgreSQL
             embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
-            
-            # Use SQLAlchemy with text() for parameterized queries
             from sqlalchemy.sql import text
-            
+
+            # Select individual chunks and join document info
             sql = text("""
             SELECT 
-                document_embeddings.id,
-                document_embeddings.document_id, 
-                document_embeddings.model,
-                document_embeddings.chunk_index,
-                document_embeddings.chunk_text,
-                documents.id as doc_id,
-                documents.title,
-                documents.content,
-                documents.file_path,
-                documents.type,
-                documents.user_id,
-                1 - (document_embeddings.embedding <=> :embedding_vector) AS similarity
-            FROM document_embeddings
-            JOIN documents ON document_embeddings.document_id = documents.id
-            WHERE document_embeddings.model = :model
-            AND 1 - (document_embeddings.embedding <=> :embedding_vector) >= :min_similarity
+                de.id as embedding_id,
+                de.document_id, 
+                de.model,
+                de.chunk_index,
+                de.chunk_text,
+                d.id as doc_id,
+                d.title as doc_title,
+                d.file_path as doc_file_path,
+                d.type as doc_type,
+                d.user_id as doc_user_id,
+                1 - (de.embedding <=> :embedding_vector) AS similarity
+            FROM document_embeddings de
+            JOIN documents d ON de.document_id = d.id
+            WHERE de.model = :model
+            AND 1 - (de.embedding <=> :embedding_vector) >= :min_similarity
             """)
-            
-            # Prepare parameters
+
             params = {
                 "embedding_vector": embedding_str,
                 "model": model,
                 "min_similarity": min_similarity
             }
-            
-            # Add user filter if specified
+
             if user_id:
-                sql = text(sql.text + " AND documents.user_id = :user_id")
+                sql = text(sql.text + " AND d.user_id = :user_id")
                 params["user_id"] = user_id
-            
-            # Add document filter if specified
+
             if document_id:
-                sql = text(sql.text + " AND documents.id = :document_id")
+                sql = text(sql.text + " AND d.id = :document_id")
                 params["document_id"] = document_id
-            
-            # Add sorting and limit
-            sql = text(sql.text + """
-            ORDER BY similarity DESC
-            LIMIT :limit
-            """)
+
+            sql = text(sql.text + " ORDER BY similarity DESC LIMIT :limit")
             params["limit"] = limit
-            
-            # Execute query with SQLAlchemy
+
             result = await db.execute(sql, params)
             rows = result.mappings().all()
-            
-            # Group by document
-            docs_dict = {}
+
+            # Format results as a list of chunks with document info
+            results = []
             for row in rows:
-                doc_id = str(row["doc_id"])
-                
-                if doc_id not in docs_dict:
-                    docs_dict[doc_id] = {
-                        "document": {
-                            "id": doc_id,
-                            "title": row["title"],
-                            "content": row["content"],
-                            "file_path": row["file_path"],
-                            "type": row["type"],
-                            "user_id": str(row["user_id"])
-                        },
-                        "similarity": float(row["similarity"]),
-                        "chunks": []
-                    }
-                
-                # Add chunk to the list
-                docs_dict[doc_id]["chunks"].append({
+                results.append({
                     "chunk_text": row["chunk_text"],
                     "chunk_index": row["chunk_index"],
-                    "similarity": float(row["similarity"])
+                    "similarity": float(row["similarity"]),
+                    "document": {
+                        "id": str(row["doc_id"]),
+                        "title": row["doc_title"],
+                        "file_path": row["doc_file_path"],
+                        "type": row["doc_type"],
+                        "user_id": str(row["doc_user_id"])
+                        # Add other document fields if needed by frontend
+                    }
                 })
-            
-            # Convert to list of results
-            results = []
-            for doc_id, data in docs_dict.items():
-                results.append({
-                    "document": data["document"],
-                    "similarity": data["similarity"],
-                    "chunks": data["chunks"]
-                })
-            
-            # Sort by similarity
-            results.sort(key=lambda x: x["similarity"], reverse=True)
-            
-            return results[:limit]
+
+            return results
         except Exception as e:
             logger.error(f"Error in similarity search: {str(e)}")
             raise
@@ -732,4 +688,30 @@ class DocumentService:
         except Exception as e:
             logger.error(f"Fatal error during raw document search within document {document_id}: {str(e)}", exc_info=True)
             raise e # Re-raise to let the endpoint handle it
+    
+    # --- Async Document Processing Trigger --- 
+    async def process_document_embeddings_async(self, document_id: UUID):
+        """Triggers the Celery task for processing embeddings asynchronously."""
+        from tasks.tasks import process_document_embeddings_task
+        try:
+            logger.info(f"Sending embedding processing task for document ID: {document_id}")
+            process_document_embeddings_task.delay(str(document_id))
+            logger.info(f"Celery task process_document_embeddings enqueued for document {document_id}.")
+        except Exception as e:
+            logger.error(f"Failed to send Celery task for document {document_id}: {e}", exc_info=True)
+            # Optionally update document status to failed here
+            # await self.update_document_status(db, document_id, ProcessingStatus.FAILED)
+            raise
+            
+    async def update_document_status(self, db: AsyncSession, document_id: UUID, status: str):
+        """Updates the processing status of a document."""
+        stmt = select(Document).filter(Document.id == document_id)
+        result = await db.execute(stmt)
+        doc = result.scalar_one_or_none()
+        if doc:
+            doc.processing_status = status
+            await db.commit()
+            logger.info(f"Updated document {document_id} status to {status}")
+        else:
+            logger.warning(f"Attempted to update status for non-existent document {document_id}")
     

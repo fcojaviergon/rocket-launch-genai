@@ -59,7 +59,8 @@ async def upload_document(
 
         logger.info(f"Document name: {name}")
         document_data = DocumentCreate(
-            name=name
+            name=name,
+            user_id=current_user.id
             # Content is passed separately to the service
         )
 
@@ -68,7 +69,7 @@ async def upload_document(
             db=db,
             document_data=document_data,
             content=content,  # Pass raw bytes 
-            user_id=current_user.id
+            user_id=current_user.id # Re-add required user_id argument
         )
 
         # Verify that the document was created correctly
@@ -502,7 +503,7 @@ async def process_document_embeddings(
             raise HTTPException(status_code=403, detail="You do not have permission")
             
         # Prevent re-processing if already completed or in progress
-        from backend.database.models.document import ProcessingStatus # Import Enum
+        from database.models.document import ProcessingStatus # Import Enum
         if document.processing_status in [ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING, ProcessingStatus.PENDING]:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -519,7 +520,7 @@ async def process_document_embeddings(
         logger.info(f"Dispatching embedding processing task to Celery for doc {document_id}.")
         try:
             # Import the Celery task
-            from backend.tasks.tasks import process_document_embeddings_task
+            from tasks.tasks import process_document_embeddings_task
             
             # Send task to Celery queue
             process_document_embeddings_task.delay(

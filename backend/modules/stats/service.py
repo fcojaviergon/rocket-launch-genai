@@ -149,14 +149,15 @@ class StatsService:
 
             # --- Monthly Counts ---
             async def fetch_monthly_counts(model_cls, date_column):
+                month_trunc = func.date_trunc('month', date_column).label('month') # Define labeled expression
                 query = (
                     select(
-                        func.date_trunc('month', date_column).label('month'),
+                        month_trunc, # Use labeled expression
                         func.count().label('count')
                     )
                     .where(date_column >= year_ago)
-                    .group_by(func.date_trunc('month', date_column)) # Use func here too
-                    .order_by(func.date_trunc('month', date_column))
+                    .group_by(month_trunc) # Group by the same labeled expression
+                    .order_by('month') # Order by the label
                 )
                 result = await db.execute(query)
                 return {row.month.strftime('%Y-%m'): row.count for row in result}
@@ -180,14 +181,15 @@ class StatsService:
             # Use DB-specific functions for day of week if possible (e.g., EXTRACT(isodow FROM ...) for postgres)
             # This example uses Python processing after fetching daily counts
             seven_days_ago = datetime.utcnow().date() - timedelta(days=6) # Include today
-            daily_executions_query = (
-                select(
-                     func.date(PipelineExecution.created_at.op('at time zone')('utc')).label('day'), # Cast to date, corrected timezone handling syntax
-                     func.count().label('count')
-                )
-                .where(PipelineExecution.created_at >= seven_days_ago)
-                .group_by(func.date(PipelineExecution.created_at.op('at time zone')('utc')))
-                .order_by(func.date(PipelineExecution.created_at.op('at time zone')('utc')))
+            day_trunc = func.date(PipelineExecution.created_at.op('at time zone')('utc')).label('day') # Define labeled expression
+            daily_executions_query = (\
+                select(\
+                     day_trunc, # Use labeled expression\
+                     func.count().label('count')\
+                )\
+                .where(PipelineExecution.created_at >= seven_days_ago)\
+                .group_by(day_trunc) # Group by the same labeled expression\
+                .order_by('day') # Order by the label\
             ) # Added closing parenthesis
             daily_executions_result_fut = db.execute(daily_executions_query)
 
@@ -218,13 +220,20 @@ class StatsService:
 
 
             analytics_data = {
-                "monthly_users": users_data,
-                "monthly_documents": docs_data,
-                "monthly_executions": executions_data,
-                "document_types": doc_types_data,
-                "document_types_percentage": doc_types_percentage,
-                "weekly_executions": weekly_executions # List indexed Sun-Sat or Mon-Sun
-                # Add other analytics as needed
+                "monthly": {
+                    "users": users_data,
+                    "documents": docs_data,
+                    "executions": executions_data,
+                },
+                "document_types": {
+                    "counts": doc_types_data,
+                    "percentages": doc_types_percentage,
+                },
+                "weekly": {
+                    "executions": weekly_executions, # List indexed Sun-Sat or Mon-Sun
+                    "users": [0]*7 # TODO: Add actual weekly user calculation
+                },
+                 # TODO: Add popular_queries data 
             }
             logger.info("Analytics statistics calculated successfully.")
             return analytics_data

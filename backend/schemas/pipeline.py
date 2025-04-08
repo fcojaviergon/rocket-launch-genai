@@ -19,7 +19,7 @@ class PipelineConfigBase(BaseModel):
     description: Optional[str] = None
     type: Optional[str] = None
     steps: List[PipelineStep] = []
-    metadata: Optional[Dict[str, Any]] = None
+    config_metadata: Optional[Dict[str, Any]] = None
 
 class PipelineConfigCreate(PipelineConfigBase):
     pass
@@ -29,18 +29,16 @@ class PipelineConfigUpdate(BaseModel):
     description: Optional[str] = None
     type: Optional[str] = None
     steps: Optional[List[PipelineStep]] = None
-    metadata: Optional[Dict[str, Any]] = None
+    config_metadata: Optional[Dict[str, Any]] = None
 
 class PipelineConfigResponse(PipelineConfigBase):
     id: UUID
     user_id: UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
-    config_metadata: Optional[Dict[str, Any]] = Field(default=None, alias="metadata")
     
     class Config:
         from_attributes = True
-        populate_by_name = True
 
 # Schemas for execution status
 class ExecutionStatus(str, Enum):

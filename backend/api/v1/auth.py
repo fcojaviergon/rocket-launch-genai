@@ -4,6 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 import jwt as pyjwt
 import logging
+from fastapi.encoders import jsonable_encoder
 
 from core.config import settings
 from core.dependencies import get_db, get_current_active_user
@@ -160,12 +161,12 @@ async def refresh_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me")
 async def get_current_user(current_user: User = Depends(get_current_active_user)):
     """
-    Get current user information
+    Get current user information (Bypassing response_model for diagnosis)
     """
     logger.info(f"Fetching current user info for: {current_user.email} (ID: {current_user.id}) Role: {current_user.role}")
     
-    # Return ORM object, Pydantic handles conversion based on UserResponse model
-    return current_user
+    # Manually encode using FastAPI's encoder
+    return jsonable_encoder(current_user)

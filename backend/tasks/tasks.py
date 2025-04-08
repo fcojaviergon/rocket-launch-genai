@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from core.config import settings
 import os
 import traceback
-from backend.database.models.document import ProcessingStatus
 
 # Settings logging
 logger = logging.getLogger('tasks.pipeline')
@@ -272,35 +271,29 @@ async def _process_document_embeddings_async(
     Uses the shared async session context manager.
     """
     document_id = uuid.UUID(document_id_str)
-    user_id = uuid.UUID(user_id_str)
+    user_id = uuid.UUID(user_id_str) # Convert user_id as well
 
     embedding_logger.info(f"[Async Helper] Starting embedding processing for doc {document_id}")
     
     # Import necessary components here to avoid circular dependencies at module level
-    from backend.database.session import get_async_session_context
-    from backend.modules.document.service import DocumentService
-    from backend.database.models.document import ProcessingStatus # Import Enum
-    from backend.core.dependencies import get_llm_client # Correct import path
-    from backend.modules.pipeline.processors import get_processor # Assuming processor registry
+    from database.session import get_async_session_context
+    from modules.document.service import DocumentService # Keep for save_embeddings
+    from database.models.document import Document, ProcessingStatus # Import Enum and Document Model
+    from core.dependencies import get_llm_client
+    # Import processors directly or via get_processor
+    from modules.pipeline.processors import TextExtractionProcessor, EmbeddingProcessor, get_processor
 
-    final_status = ProcessingStatus.FAILED # Default to failed unless explicitly completed
+    final_status = ProcessingStatus.FAILED # Default to failed
+    error_message_final = "Unknown processing error"
+
     try:
         async with get_async_session_context() as session:
             embedding_logger.debug(f"[Async Helper] Acquired DB session {id(session)} for doc {document_id}")
             
-            # Instantiate DocumentService
-            try:
-                llm_client = get_llm_client()
-                doc_service = DocumentService(llm_client=llm_client)
-                embedding_logger.debug(f"[Async Helper] DocumentService instantiated for doc {document_id}")
-            except Exception as client_err:
-                embedding_logger.error(f"[Async Helper] Failed to get LLM client for doc {document_id}: {client_err}", exc_info=True)
-                raise # Let outer try handle status update
-
             # 1. Get document and set status to PROCESSING
-            document = await session.get(Document, document_id) # Use session directly
+            document = await session.get(Document, document_id)
             if not document:
-                embedding_logger.error(f"[Async Helper] Document {document_id} not found during processing.")
+                embedding_logger.error(f"[Async Helper] Document {document_id} not found.")
                 return # Exit task gracefully
             
             # Check if already processed or currently processing to avoid redundant work
@@ -312,69 +305,91 @@ async def _process_document_embeddings_async(
             await session.flush() # Flush to make status update visible if needed, commit happens later
             embedding_logger.info(f"[Async Helper] Set doc {document_id} status to PROCESSING")
             
-            # Optional: Re-verify permissions? 
-            # if document.user_id != user_id: ...
+            # --- START TEXT EXTRACTION ---
+            context = {} # Initialize context
+            text_processor = TextExtractionProcessor() # Instantiate text processor
+            embedding_logger.info(f"[Async Helper] Running TextExtractionProcessor for doc {document_id}")
+            context = await text_processor.process(document, context) # Run text extraction
+            document_content = context.get("document_content")
+            extraction_error = context.get("text_extraction_error")
             
-            # 2. Get the processor
-            try:
-                embedding_processor = get_processor(
-                    "embedding", 
-                    config={
-                        "model": model,
-                        "chunk_size": chunk_size,
-                        "chunk_overlap": chunk_overlap
-                    }
-                )
-                embedding_logger.debug(f"[Async Helper] Embedding processor obtained for doc {document_id}")
-            except (ImportError, ValueError) as proc_err:
-                 embedding_logger.error(f"[Async Helper] Error getting embedding processor for doc {document_id}: {proc_err}", exc_info=True)
-                 raise proc_err # Let outer try handle status update
-
-            embedding_logger.info(f"[Async Helper] Calling embedding_processor.process() for doc {document_id}...")
-            
-            # 3. Call the process method
-            result = await embedding_processor.process(document, {}) 
-            embedding_logger.debug(f"[Async Helper] Processor result for doc {document_id}: {result}")
-            
-            # 4. Verify result and save embeddings
-            if "error" in result:
-                embedding_logger.error(f"[Async Helper] Processor returned error for doc {document_id}: {result['error']}")
-                final_status = ProcessingStatus.FAILED
-                document.error_message = result['error'][:1024] # Store error if field exists
+            if extraction_error or not document_content:
+                error_message_final = f"Text extraction failed: {extraction_error or 'No content extracted'}"
+                embedding_logger.error(f"[Async Helper] {error_message_final} for doc {document_id}")
+                # Status will remain FAILED (default)
+                # Update error message in DB before exiting try block
             else:
-                embeddings_data = result.get("embeddings")
-                chunks_text_data = result.get("chunks_text")
+                embedding_logger.info(f"[Async Helper] Text extracted successfully for doc {document_id}. Length: {len(document_content)}")
+                # --- END TEXT EXTRACTION ---
+                
+                # --- START EMBEDDING PROCESSING (only if text extraction succeeded) ---
+                try:
+                    llm_client = get_llm_client()
+                    embedding_processor = get_processor(
+                        "embedding", 
+                        config={
+                            "model": model,
+                            "chunk_size": chunk_size,
+                            "chunk_overlap": chunk_overlap
+                        },
+                        llm_client=llm_client
+                    )
+                    embedding_logger.debug(f"[Async Helper] Embedding processor obtained for doc {document_id}")
 
-                if embeddings_data and chunks_text_data:
-                    saved_model = result.get("model", model)
-                    try:
-                        saved_list = await doc_service.save_embeddings(
-                            db=session, # Pass the session
-                            document_id=document_id,
-                            embeddings=embeddings_data,
-                            chunks_text=chunks_text_data, 
-                            model=saved_model
-                        )
-                        embedding_logger.info(f"[Async Helper] Successfully saved {len(saved_list)} embeddings for doc {document_id}.")
-                        final_status = ProcessingStatus.COMPLETED # Mark as completed only on full success
-                        document.error_message = None # Clear previous errors if field exists
-                    except Exception as save_err:
-                        embedding_logger.error(f"[Async Helper] Failed to save embeddings for doc {document_id}: {save_err}", exc_info=True)
-                        final_status = ProcessingStatus.FAILED
-                        document.error_message = f"Failed to save embeddings: {save_err}"[:1024]
-                        # Do not re-raise here, let finally block handle status update
-                elif "chunk_count" in result and result["chunk_count"] == 0:
-                     embedding_logger.warning(f"[Async Helper] No embeddings generated for doc {document_id} (0 chunks).")
-                     final_status = ProcessingStatus.COMPLETED # Consider it completed, but with 0 embeddings
-                     document.error_message = "No content found for embedding processing."
-                else:
-                    embedding_logger.error(f"[Async Helper] Unexpected processor result (no embeddings/chunks) for doc {document_id}: {result}")
-                    final_status = ProcessingStatus.FAILED
-                    document.error_message = "Unexpected processor result."
+                    embedding_logger.info(f"[Async Helper] Calling embedding_processor.process() for doc {document_id}...")
+                    
+                    # Pass the context containing the extracted text
+                    result = await embedding_processor.process(document, context) 
+                    embedding_logger.debug(f"[Async Helper] Processor result for doc {document_id}: {result}")
+                    
+                    # 4. Verify result and save embeddings
+                    if "error" in result:
+                        error_message_final = f"Embedding processor failed: {result['error']}"
+                        embedding_logger.error(f"[Async Helper] Processor returned error for doc {document_id}: {result['error']}")
+                        # Status remains FAILED
+                    else:
+                        embeddings_data = result.get("embeddings")
+                        chunks_text_data = result.get("chunks_text")
+
+                        if embeddings_data and chunks_text_data:
+                            saved_model = result.get("model", model)
+                            try:
+                                # Need DocumentService to save embeddings
+                                doc_service = DocumentService(llm_client=llm_client) # Instantiate service
+                                saved_list = await doc_service.save_embeddings(
+                                    db=session, # Pass the session
+                                    document_id=document_id,
+                                    embeddings=embeddings_data,
+                                    chunks_text=chunks_text_data, 
+                                    model=saved_model
+                                )
+                                embedding_logger.info(f"[Async Helper] Successfully saved {len(saved_list)} embeddings for doc {document_id}.")
+                                final_status = ProcessingStatus.COMPLETED # Mark as completed only on full success
+                                error_message_final = None # Clear error message on success
+                            except Exception as save_err:
+                                error_message_final = f"Failed to save embeddings: {save_err}"[:1024]
+                                embedding_logger.error(f"[Async Helper] {error_message_final} for doc {document_id}", exc_info=True)
+                                # Status remains FAILED
+                        elif result.get("chunk_count") == 0:
+                             error_message_final = "No content found for embedding processing."
+                             embedding_logger.warning(f"[Async Helper] No embeddings generated for doc {document_id} (0 chunks). Status set to FAILED.")
+                             # Status remains FAILED (as no embeddings were generated/saved)
+                        else:
+                            error_message_final = "Embedding processor returned unexpected result (no embeddings/chunks)."
+                            embedding_logger.error(f"[Async Helper] {error_message_final} for doc {document_id}: {result}")
+                            # Status remains FAILED
+                except Exception as emb_exc:
+                     error_message_final = f"Embedding processing step failed: {emb_exc}"
+                     embedding_logger.error(f"[Async Helper] Error during embedding processing for doc {document_id}: {emb_exc}", exc_info=True)
+                     # Status remains FAILED
+                 # --- END EMBEDDING PROCESSING ---
             
-            # Update final status - commit happens automatically via context manager on success
+            # Update final status and error message outside the inner try,
+            # ensuring it reflects extraction or embedding failure
             document.processing_status = final_status
-            embedding_logger.info(f"[Async Helper] Setting final status for doc {document_id} to {final_status.value}")
+            document.error_message = error_message_final
+            embedding_logger.info(f"[Async Helper] Setting final status for doc {document_id} to {final_status.value} with error: {error_message_final}")
+            # Commit happens automatically via context manager 'async with' on successful exit
 
     except Exception as task_exc:
         embedding_logger.error(f"[Async Helper] Unhandled exception in embedding task for doc {document_id}: {task_exc}", exc_info=True)
@@ -382,15 +397,14 @@ async def _process_document_embeddings_async(
         try:
             async with get_async_session_context() as error_session:
                 doc_to_fail = await error_session.get(Document, document_id)
-                if doc_to_fail:
+                if doc_to_fail and doc_to_fail.processing_status != ProcessingStatus.COMPLETED: # Avoid overwriting completed status
                     doc_to_fail.processing_status = ProcessingStatus.FAILED
                     doc_to_fail.error_message = f"Task failed: {task_exc}"[:1024]
                     await error_session.flush() # Commit happens on context exit
-                    embedding_logger.info(f"[Async Helper] Updated doc {document_id} status to FAILED due to exception.")
+                    embedding_logger.info(f"[Async Helper] Updated doc {document_id} status to FAILED due to task exception.")
         except Exception as update_err:
             embedding_logger.error(f"[Async Helper] Failed to update document status to FAILED after task exception for doc {document_id}: {update_err}", exc_info=True)
-        # Re-raise the original exception so Celery knows the task failed
-        raise task_exc
+        # No need to re-raise here, Celery will mark failed based on return/exception
 
 # --- End NEW Embedding Processing Task ---
 

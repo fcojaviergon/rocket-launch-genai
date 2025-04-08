@@ -10,7 +10,7 @@ from database.models.document import Document
 from modules.auth.service import AuthService
 from schemas.auth import (
     UserCreate, UserUpdate, UserResponse, UserListResponse, 
-    UserProfileUpdate, UserPasswordUpdate, UserResponseWithRole
+    UserProfileUpdate, UserPasswordUpdate, UserResponseWithRole, PaginatedUserResponse
 )
 from core.dependencies import (
     get_auth_service, get_db, get_current_user, 
@@ -19,7 +19,7 @@ from core.dependencies import (
 
 router = APIRouter()
 
-@router.get("", response_model=dict)
+@router.get("", response_model=PaginatedUserResponse)
 async def get_users(
     page: int = 1,
     page_size: int = 10,
@@ -48,9 +48,7 @@ async def read_current_user(
     """
     Get current user
     """
-    return {
-        current_user
-    }
+    return current_user
 
 @router.put("/me", response_model=UserResponse)
 async def update_current_user(

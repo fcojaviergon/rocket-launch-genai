@@ -67,8 +67,9 @@ export function useApi(options: ApiOptions = {}) {
       }
       
       if (response.status === 401) {
-        // Redirect to login using Next.js router
-        router.push('/login');
+        // Just throw the error. NextAuth session handling should take over.
+        // If the refresh fails later, the session object will get an error flag,
+        // which can be used by UI components or context providers to redirect.
         throw new ApiError('Session expired or user not authenticated', 401);
       }
       

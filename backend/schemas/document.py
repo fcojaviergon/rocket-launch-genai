@@ -1,9 +1,12 @@
-from pydantic import BaseModel, Field, UUID4, HttpUrl
+from pydantic import BaseModel, Field, UUID4, HttpUrl, validator, root_validator, computed_field, model_validator
 from uuid import UUID
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
-from pydantic import validator, root_validator
 import enum
+import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Re-define Enum here for schema usage
 class ProcessingStatus(enum.Enum):
@@ -45,7 +48,7 @@ class SearchRequest(BaseModel):
     document_id: Optional[UUID] = Field(None, description="Optional document ID to filter search within a specific document.")
 
 class DocumentProcessingResultResponse(BaseModel):
-    id: Optional[UUID] = None
+    id: Optional[UUID] = None # Allow None for synthesized results
     document_id: UUID
     pipeline_name: str
     summary: Optional[str] = None
@@ -54,7 +57,7 @@ class DocumentProcessingResultResponse(BaseModel):
     process_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -71,28 +74,32 @@ class PipelineExecutionResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    pipeline_name: Optional[str] = None
-    
+    pipeline_name: Optional[str] = None # Keep this if pipeline relationship might be missing
+
     class Config:
         from_attributes = True
 
 class DocumentResponse(BaseModel):
     id: UUID
-    title: str  # Corresponds to name in the API
+    title: str
     content: str
-    user_id: UUID  # Corresponds to user_id in the database
+    user_id: UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
     file_path: Optional[str] = None
     type: Optional[str] = None
-    processing_results: Optional[List[DocumentProcessingResultResponse]] = None
+
+    # These fields will be populated by the service layer
     pipeline_executions: Optional[List[PipelineExecutionResponse]] = None
-    processing_status: ProcessingStatus = Field(..., description="Status of the embedding process")
+    processing_results: Optional[List[DocumentProcessingResultResponse]] = None
+
+    processing_status: Union[ProcessingStatus, str] = Field(..., description="Status of the embedding process")
 
     class Config:
-        from_attributes = True
-        exclude = {"document": {"pipeline_executions"}}
+        from_attributes = True # Still needed to load from ORM object initially in service
         arbitrary_types_allowed = True
+        use_enum_values = True
+        populate_by_name = True
 
 class PipelineInfo(BaseModel):
     name: str
