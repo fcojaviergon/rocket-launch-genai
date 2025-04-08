@@ -67,6 +67,7 @@ Thumbs.db
 .settings/
 *.code-workspace
 .cursor/
+.windsurfrules
 
 # Logs
 logs/
@@ -107,4 +108,3 @@ backend/storage/documents/*
 !backend/storage/documents/.gitkeep
 
 # Misc
-.windsurfrules

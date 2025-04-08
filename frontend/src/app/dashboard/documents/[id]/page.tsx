@@ -82,11 +82,11 @@ export default function DocumentDetailPage() {
   const apiClient = useApi();
   const router = useRouter();
 
-  // Función simplificada que NO hace llamadas API
+  // Simplified function that does NOT make API calls
   const refreshExecutions = useCallback(() => {
-    console.log("Actualizando ejecuciones desde datos del documento");
+    console.log("Updating executions from document data");
     
-    // Si el documento tiene ejecuciones, usamos esas
+    // If the document has executions, use them
     if (document && document.pipeline_executions && document.pipeline_executions.length > 0) {
       const documentExecutions = document.pipeline_executions as PipelineExecution[];
       setExecutions(documentExecutions);
@@ -96,9 +96,9 @@ export default function DocumentDetailPage() {
       );
       setHasRunningExecutions(hasRunning);
       
-      toast.success("Lista de ejecuciones actualizada");
+      toast.success("List of executions updated");
     } else {
-      // Si no hay ejecuciones en el documento, dejamos la lista vacía
+      // If there are no executions in the document, leave the list empty
       setExecutions([]);
       setHasRunningExecutions(false);
     }
@@ -432,7 +432,7 @@ export default function DocumentDetailPage() {
                 <TabsContent value="executions" className="mt-4">
                   {executionId && (
                     <div className="mb-6">
-                      <div className="text-sm font-medium mb-2">Ejecución actual:</div>
+                      <div className="text-sm font-medium mb-2">Current execution:</div>
                       <ExecutionStatus 
                         executionId={executionId} 
                         showDetails={true}

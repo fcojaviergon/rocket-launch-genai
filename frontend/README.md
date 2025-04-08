@@ -56,34 +56,11 @@ frontend/
 
 ## Getting Started
 
-### Prerequisites
+-See the main installation guides:
+- [Docker Installation Guide](../docs/DOCKER_INSTALLATION.md)
+- [Local Installation Guide](../docs/LOCAL_INSTALLATION.md)
 
-- Node.js 18+ (LTS recommended)
-- npm, yarn, or pnpm
-- Access to a running backend instance of the Rocket Launch GenAI Platform
-
-### Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd rocket-launch-genai/frontend
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   npm install
-   # or
-   yarn install
-   ```
-
-3. **Configure Environment Variables:**
-   - Copy `.env.development` to `.env.local`
-   - Adjust variables as needed:
-     - `NEXT_PUBLIC_API_BASE_URL`: URL of the backend API
-     - `NEXTAUTH_URL`: Frontend application URL
-     - `NEXTAUTH_SECRET`: Secret for NextAuth.js
-     - Other settings required for your deployment
+-See [Configuration Variables](../docs/CONFIGURATION.md) for details on environment variables.
 
 ### Running the Development Server
 
@@ -134,13 +111,9 @@ yarn start
 
 ## Docker Deployment
 
-A Dockerfile is provided for containerized deployment. Build with:
+A Dockerfile is provided for containerized deployment.
 
-```bash
-docker build -t rocket-launch-frontend .
-```
-
-Or use the root docker-compose.yml for a full-stack deployment.
+Refer to the main [Docker Installation Guide](../docs/DOCKER_INSTALLATION.md) for building and running with Docker Compose.
 
 ## Customization
 

@@ -211,20 +211,12 @@ pip install -r requirements.txt
 ```
 
 3. Set up environment variables:
-```bash
-cp .env.development .env.local
-```
-
-Edit `.env.local` with your configuration:
-```env
-DATABASE_URL=postgresql://rocket:rocket123@localhost:5432/rocket_launch_genai
-REDIS_URL=redis://localhost:6379/0
-SECRET_KEY=your_secret_key_here
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-SUPERUSER_EMAIL=admin@example.com
-SUPERUSER_PASSWORD=password
-```
+For local installations, create `.env.local` files in both the `backend` and `frontend` directories (you can copy from the `.env.development` files).
+Configure the necessary variables as described in the central [CONFIGURATION.md](../CONFIGURATION.md) guide.
+**Key differences for local setup:**
+  - Database/Redis URLs should use `localhost`.
+  - `INTERNAL_BACKEND_URL` is not typically needed for the frontend.
+  - Ensure ports don't conflict with other local services.
 
 4. Initialize database:
 ```bash
@@ -253,16 +245,8 @@ npm install
 ```
 
 3. Set up environment variables:
-```bash
-cp .env.development .env.local
-```
-
-Edit `.env.local` with your configuration:
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXTAUTH_URL=http://localhost:3000
-NEXTAUTH_SECRET=your_nextauth_secret_here
-```
+Create `frontend/.env.local` (e.g., by copying `frontend/.env.development`).
+Configure the necessary variables as described in the central [CONFIGURATION.md](../CONFIGURATION.md) guide, ensuring `NEXTAUTH_URL` and `NEXT_PUBLIC_BACKEND_URL` point to your local setup (e.g., `http://localhost:3000` and `http://localhost:8000`).
 
 4. Start the development server:
 ```bash
@@ -307,36 +291,7 @@ Default admin login:
 
 ## Environment Variables Reference
 
-### Backend (.env.local)
-```env
-# Database
-DATABASE_URL=postgresql://rocket:rocket123@localhost:5432/rocket_launch_genai
-
-# Authentication
-SECRET_KEY=your_secret_key_here
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-
-# Admin user (created on first run)
-SUPERUSER_EMAIL=admin@example.com
-SUPERUSER_PASSWORD=password
-
-# Redis
-REDIS_URL=redis://localhost:6379/0
-
-# AI Services (if used)
-OPENAI_API_KEY=your_openai_key
-```
-
-### Frontend (.env.local)
-```env
-# API Connection
-NEXT_PUBLIC_API_URL=http://localhost:8000
-
-# NextAuth
-NEXTAUTH_URL=http://localhost:3000
-NEXTAUTH_SECRET=your_nextauth_secret_here
-```
+See the central [CONFIGURATION.md](../CONFIGURATION.md) guide for a complete reference of all environment variables.
 
 ## Troubleshooting
 

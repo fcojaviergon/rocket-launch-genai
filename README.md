@@ -22,8 +22,8 @@ The Rocket Launch GenAI Platform provides a modular, white-label solution for de
 
 Choose your preferred installation method:
 
-- [Docker Installation Guide](DOCKER_INSTALLATION.md) (Recommended)
-- [Local Installation Guide](LOCAL_INSTALLATION.md)
+- [Docker Installation Guide](docs/DOCKER_INSTALLATION.md) (Recommended)
+- [Local Installation Guide](docs/LOCAL_INSTALLATION.md)
 
 ## Quick Links
 
@@ -46,10 +46,11 @@ Note: Server execution is managed by the project owner. Once installation is com
 
 ## Documentation
 
-- [Functional & Technical Specification](FUNCTIONAL_TECH_SSF.md)
-- [Step-by-Step Tutorial](TUTORIAL.md)
-- [Development Roadmap](ROADMAP.md)
-- [Installation Guide](INSTALLATION_GUIDE.md)
+- [Functional & Technical Specification](docs/FUNCTIONAL_TECH_SSF.md)
+- [Step-by-Step Tutorial](docs/TUTORIAL.md)
+- [Development Roadmap](docs/ROADMAP.md)
+- [Configuration Variables](docs/CONFIGURATION.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 

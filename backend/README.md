@@ -68,47 +68,11 @@ backend/
 
 ## Getting Started
 
-### Prerequisites
+See the main installation guides:
+- [Docker Installation Guide](../docs/DOCKER_INSTALLATION.md)
+- [Local Installation Guide](../docs/LOCAL_INSTALLATION.md)
 
-- Python 3.12+
-- PostgreSQL 16+ with pgvector extension installed
-- Redis server
-- Required API keys for AI services (if using external providers)
-
-### Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd rocket-launch-genai/backend
-   ```
-
-2. **Set up a virtual environment:**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Configure Environment Variables:**
-   - Copy `.env.development` to `.env.local`
-   - Set required variables:
-     - `DATABASE_URL`: PostgreSQL connection string
-     - `REDIS_URL`: Redis connection string
-     - `SECRET_KEY`: JWT signing key
-     - `SUPERUSER_EMAIL` and `SUPERUSER_PASSWORD`: Admin credentials
-     - AI service API keys (e.g., `OPENAI_API_KEY`)
-
-5. **Set up the Database:**
-   - Ensure PostgreSQL is running with pgvector extension
-   - Run migrations:
-     ```bash
-     alembic upgrade head
-     ```
+See [Configuration Variables](../docs/CONFIGURATION.md) for details on environment variables.
 
 ### Running the Development Server
 
@@ -121,19 +85,11 @@ The API will be available at http://localhost:8000 with documentation at http://
 
 ### Running Celery Workers
 
-In a separate terminal:
-```bash
-bash start_worker.sh
-```
+See the main installation guides for instructions on running workers, usually via `bash start_worker.sh` after activating the environment.
 
 ### Running Flower (Monitoring Dashboard)
 
-In a separate terminal:
-```bash
-bash start_flower.sh
-```
-
-Access the Flower dashboard at http://localhost:5555.
+See the main installation guides for instructions on running Flower, usually via `bash start_flower.sh`.
 
 ## API Documentation
 
@@ -144,17 +100,9 @@ The API is self-documenting with OpenAPI:
 
 ## Docker Deployment
 
-The backend includes Dockerfiles for both the API and worker services:
+The backend includes Dockerfiles for both the API and worker services.
 
-```bash
-# Build API container
-docker build -t rocket-launch-backend -f Dockerfile .
-
-# Build worker container
-docker build -t rocket-launch-worker -f Dockerfile.worker .
-```
-
-For full deployment, use the root docker-compose.yml file.
+Refer to the main [Docker Installation Guide](../docs/DOCKER_INSTALLATION.md) for building and running with Docker Compose.
 
 ## Testing
 

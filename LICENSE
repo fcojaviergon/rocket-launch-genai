@@ -1,35 +1,56 @@
 License Agreement
 
-This License Agreement ("Agreement") is entered into between Rocket Launch GenaAI ("the Company"), whose contact information is fran@cunda.io, and you, the user ("Licensee"), regarding the use of the Rocket Launch GenAI Platform (the "Product") provided by the Company. By downloading, accessing, or using the Product, Licensee agrees to be bound by the terms and conditions of this Agreement.
+📜 Rocket Launch GenAI – License Agreement
+Last updated: April 2025
 
-1. Grant of License
-Subject to the terms and conditions of this Agreement, Rocket Launch GenaAI grants Licensee a non-exclusive, non-transferable, and non-sublicensable Individual License to use the Rocket Launch GenAI Platform for the following purposes:
+1. Introduction
+This agreement ("Agreement") governs the use of Rocket Launch GenAI ("the Product"), a modular and production-ready codebase provided by Rocket Launch GenaAI ("the Company", contact: fran@cunda.io), for developers building GenAI applications with full control over backend, frontend, and AI pipelines. By purchasing, downloading, accessing, or using the Product, you ("Licensee") agree to be bound by the terms and conditions outlined below.
 
-Create unlimited projects, both non-commercial and commercial.
-Build and develop applications or solutions for personal use, client work, or internal business purposes.
-Modify, customize, and expand upon the code to suit specific project needs.
+2. License Tiers
+The Product is offered under the following license tiers:
 
-2. Restrictions
+   - Indie: Grants the Licensee the right to use the Product for unlimited personal, internal, or commercial projects. Delivery via .zip file.
+   - Pro: Grants the Licensee the rights of the Indie tier, plus access to a private GitHub repository containing the Product, including version history, onboarding guides, and lifetime updates (future improvements, new features, and premium documentation).
+
+   Specific pricing and features for each tier are detailed on the official product website.
+
+3. ✅ What You Can Do (Grant of License)
+Subject to the terms, conditions, and your chosen license tier, the Company grants Licensee a non-exclusive, non-transferable license to:
+
+   - Use the codebase for unlimited personal, internal business, client work, or commercial projects (as permitted by the purchased license tier).
+   - Modify, extend, customize, and expand upon the code to suit specific project needs.
+   - Deploy the code on Licensee's own infrastructure (e.g., Vercel, Docker, VPS).
+   - Rebrand the user interface and adapt the functionality for Licensee's product or client needs.
+   - Deliver applications built using the Product to clients (Pro license required).
+
+4. ❌ What You Cannot Do (Restrictions)
 Licensee shall not:
 
-Resell or redistribute the Rocket Launch GenAI Platform as a standalone product or as part of a template, package, or course where the primary value is in the project template itself.
-Remove, alter, or obscure any copyright, trademark, or other proprietary notices from the Rocket Launch GenAI Platform.
-Use the Rocket Launch GenAI Platform in any way that violates applicable laws, regulations, or third-party rights.
-Sub-license, rent, lease, or transfer the Rocket Launch GenAI Platform or any rights granted under this Agreement.
+   - Resell or redistribute the Product codebase (modified or unmodified) as a standalone product, template, package, boilerplate, or as part of a course where the primary value is derived from the Product itself.
+   - Publish the Product code in a public GitHub repository or otherwise make it openly accessible.
+   - Transfer, sublicense, rent, or lease the Product or any rights granted under this Agreement to third parties.
+   - Use the Product to build a directly competing GenAI starter kit, clone, or substantially similar product.
+   - Remove, alter, or obscure any copyright, trademark, or other proprietary notices from the Product.
+   - Use the Product in any way that violates applicable laws, regulations, or third-party rights.
 
-3. Ownership and Intellectual Property
-[Your Company Name] retains all ownership and intellectual property rights in and to the Rocket Launch GenAI Platform. This Agreement does not grant Licensee any ownership rights in the Rocket Launch GenAI Platform, beyond the right to use it as outlined in Section 1.
+5. Delivery
+   - Indie License: Licensee will receive a .zip file containing the full source code and installation guide via email, typically within 2 hours of payment confirmation.
+   - Pro License: Licensee will receive an invitation to a private GitHub repository, typically within 24 hours of payment confirmation. The repository includes the full project, onboarding guide, version history, and access to future updates as per the Pro tier benefits.
 
-4. Warranty and Disclaimer
-The Rocket Launch GenAI Platform is provided "as is" without warranty of any kind, either express or implied, including, but not limited to, the implied warranties of merchantability, fitness for a particular purpose, or noninfringement.
+6. Ownership and Intellectual Property
+The Company retains all ownership and intellectual property rights in and to the Product. This Agreement does not grant Licensee any ownership rights in the Product, beyond the right to use it as outlined herein.
 
-5. Limitation of Liability
-To the maximum extent permitted by applicable law, Rocket Launch GenaAI shall not be liable for any direct, indirect, incidental, special, consequential, or punitive damages arising out of or relating to the use or inability to use the Rocket Launch GenAI Platform, even if [Your Company Name] has been advised of the possibility of such damages.
+7. Warranty and Disclaimer
+The Product is provided "as is" without warranty of any kind, either express or implied, including, but not limited to, the implied warranties of merchantability, fitness for a particular purpose, or noninfringement.
 
-6. Governing Law and Jurisdiction
-This Agreement shall be governed by and construed in accordance with the laws of, Republic of Chile without regard to its conflict of law principles. Any dispute arising out of or in connection with this Agreement shall be subject to the exclusive jurisdiction of the courts located in Chile.
+8. Limitation of Liability
+To the maximum extent permitted by applicable law, the Company shall not be liable for any direct, indirect, incidental, special, consequential, or punitive damages arising out of or relating to the use or inability to use the Product, even if the Company has been advised of the possibility of such damages.
 
-7. Entire Agreement
-This Agreement constitutes the entire agreement between Licensee and Rocket Launch GenaAI concerning the subject matter herein and supersedes all prior or contemporaneous agreements, representations, warranties, and understandings.
+9. Governing Law and Jurisdiction
+This Agreement shall be governed by and construed in accordance with the laws of the Republic of Chile, without regard to its conflict of law principles. Any disputes arising out of or in connection with this Agreement shall be subject to the exclusive jurisdiction of the ordinary courts of the city of Santiago, Chile.
 
-Last updated: April 2, 2024 
+10. Contact
+For questions regarding this license, delivery, or support, please contact: fran@cunda.io
+
+11. Entire Agreement
+This Agreement constitutes the entire agreement between Licensee and the Company concerning the subject matter herein and supersedes all prior or contemporaneous agreements, representations, warranties, and understandings. 
