@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 
 # Define Enum for Processing Status
 class ProcessingStatus(enum.Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    NOT_PROCESSED = "not_processed" # Initial state before any processing is triggered
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    NOT_PROCESSED = "NOT_PROCESSED" # Initial state before any processing is triggered
 
 class Document(BaseModel):
     """Model for documents"""

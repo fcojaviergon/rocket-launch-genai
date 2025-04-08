@@ -15,14 +15,15 @@ RUN apt-get install -y -qq --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies (as root, or switch user temporarily)
+# Copy only requirements first to leverage Docker cache
 COPY --chown=appuser:appuser requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Copy project files and entrypoint
-COPY --chown=appuser:appuser docker-entrypoint.sh .
-RUN chmod +x docker-entrypoint.sh
+# Now copy the rest of the application code
 COPY --chown=appuser:appuser . .
+
+# Copy entrypoint (already included in the code copy above, ensure permissions)
+RUN chmod +x docker-entrypoint.sh
 
 # Create storage directory (owner will be fixed by entrypoint)
 RUN mkdir -p storage/documents

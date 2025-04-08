@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - N/A (Related to this specific set of changes)
+- **Docker Backend Startup**: Resolved `PermissionError` during startup by correctly handling `DOCUMENT_STORAGE_PATH` and `LOG_DIR` configuration using environment variables for Docker overrides and moving `os.makedirs` calls to `main.py` startup event.
+- **Docker Backend Dependencies**: Fixed `ModuleNotFoundError: No module named 'anthropic'` by correcting the `COPY`/`RUN pip install` order in `backend/Dockerfile`.
+- **Database Initialization**: Corrected `DBAPIError: InvalidTextRepresentationError` for `processing_status_enum` by changing the Python `ProcessingStatus` Enum values in `backend/database/models/document.py` to uppercase to match PostgreSQL expectations.
 
 ### Added
 - `CHANGELOG.md` file to track project changes.

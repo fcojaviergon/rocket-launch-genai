@@ -74,12 +74,16 @@ class Settings(BaseSettings):
     DEFAULT_EMBEDDING_MODEL: str = os.environ.get("DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Document storage
-    # Calculate path relative to the project root (assuming config.py is in core/)
-    _project_root: ClassVar[str] = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    DOCUMENT_STORAGE_PATH: str = os.path.join(_project_root, "backend", "storage", "documents")
+    # Calculate path relative to the project root for local development default
+    _local_project_root: ClassVar[str] = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _default_local_storage_path: ClassVar[str] = os.path.join(_local_project_root, "backend", "storage", "documents")
+    # Use env var for Docker override, default to calculated local path
+    DOCUMENT_STORAGE_PATH: str = os.environ.get("CONTAINER_DOCUMENT_STORAGE_PATH", _default_local_storage_path)
 
     # Logging
-    LOG_DIR: str = os.path.join(_project_root, "backend", "logs")
+    _default_local_log_path: ClassVar[str] = os.path.join(_local_project_root, "backend", "logs")
+    # Use env var for Docker override, default to calculated local path
+    LOG_DIR: str = os.environ.get("CONTAINER_LOG_DIR", _default_local_log_path)
 
     # Initial Admin User (for init_db)
     # These should be set in the environment for initial setup
@@ -94,8 +98,6 @@ class Settings(BaseSettings):
         if provider not in ['openai', 'anthropic']:
             raise ValueError(f"Unsupported AI_PROVIDER: '{v}'. Must be 'openai' or 'anthropic'.")
         return provider
-
-    print(f"DOCUMENT_STORAGE_PATH: {DOCUMENT_STORAGE_PATH}")
 
     @field_validator("DATABASE_URL", mode="before")
     def assemble_db_connection(cls, v: Optional[str], info) -> Any:
@@ -194,15 +196,9 @@ class Settings(BaseSettings):
         except ValueError as e:
             logger.error(f"Failed to get database URLs: {e}")
 
-
 # Export settings as a singleton instance
 try:
     settings = Settings()
-    # Ensure document storage path exists after settings are loaded
-    # Moved from __init__ to avoid side effects during import/validation
-    os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
-    logger.info(f"Ensured document storage directory exists: {settings.DOCUMENT_STORAGE_PATH}")
-
 except ValidationError as e:
     logger.critical(f"CRITICAL ERROR: Failed to load application settings: {e}")
     # Optionally re-raise or exit if settings are critical for startup

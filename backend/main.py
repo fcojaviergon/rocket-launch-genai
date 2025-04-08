@@ -58,11 +58,16 @@ async def startup_event():
     logger.info("Starting application...")
     # Initialize the database and create default users if they don't exist
     try:
-        # Ensure document storage path exists (moved from config init)
-        # Although settings ensures this on import, doing it here is more explicit for startup
-        # os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
-        # logger.info(f"Ensured document storage directory exists: {settings.DOCUMENT_STORAGE_PATH}")
-        # Note: Decided against moving os.makedirs here as it's handled safely after Settings() in config.py
+        # Ensure necessary directories exist, safely handling potential errors
+        try:
+            os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
+            logger.info(f"Ensured document storage directory exists: {settings.DOCUMENT_STORAGE_PATH}")
+            os.makedirs(settings.LOG_DIR, exist_ok=True)
+            logger.info(f"Ensured log directory exists: {settings.LOG_DIR}")
+        except OSError as e:
+            logger.error(f"Error creating necessary directories: {e}", exc_info=True)
+            # Depending on severity, you might want to raise the error or exit
+            # raise e 
 
         await init_db()
         logger.info("Database initialized correctly")

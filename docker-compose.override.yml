@@ -12,6 +12,18 @@ services:
       - document_storage:/app/storage/documents # Ensure storage volume is still mapped
     # Use a command that enables auto-reloading for development
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload 
+    environment:
+      # Development specific settings can go here, overriding base docker-compose.yml
+      # Example: Setting ENVIRONMENT specifically for development override
+      ENVIRONMENT: development
+      DB_ECHO_LOG: "true" # Example: Enable SQL echoing for dev
+      LOG_LEVEL: DEBUG # Example: More verbose logging for dev
+      ENV_FILE: backend/.env.development # Explicitly load dev env file if needed
+      # ---> Add container-specific paths here <---
+      CONTAINER_DOCUMENT_STORAGE_PATH: /app/storage/documents
+      CONTAINER_LOG_DIR: /app/logs
+    ports:
+      - "8000:8000" # Expose backend port for direct access if needed in dev
 
   celery_worker:
     env_file:
@@ -44,3 +56,17 @@ services:
       - /app/.next # Persist .next cache between runs if desired
     # Run the development server command
     command: npm run dev 
+    environment:
+      NODE_ENV: development
+      ENV_FILE: frontend/.env.development # Explicitly load dev env file if needed
+    ports:
+      - "3000:3000"
+
+# Development overrides typically don't need separate volumes for DB/Redis
+# as the base docker-compose.yml likely defines them.
+
+# Example override for worker if needed
+# worker:
+#   environment:
+#     LOG_LEVEL: DEBUG
+#     ENV_FILE: backend/.env.development 
