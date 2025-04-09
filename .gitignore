@@ -97,13 +97,24 @@ pnpm-debug.log*
 # Frontend Build
 frontend/.next/
 frontend/node_modules/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/.env.development
+frontend/.env.production
 
 # Backend specific
 backend/__pycache__/
 backend/**/__pycache__/
 backend/**/**/__pycache__/
-backend/.env.*
-!backend/.env.example
+
+backend/.env.local
+backend/.env.development.local
+backend/.env.test.local
+backend/.env.production.local
+backend/.env.development
+backend/.env.production
 backend/storage/documents/*
 !backend/storage/documents/.gitkeep
 
