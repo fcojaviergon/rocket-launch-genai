@@ -10,6 +10,7 @@ from core.anthropic_client import AnthropicClient # Import even if skeleton
 
 # Import Services that need injection or are injected
 from services.ai.chat_service import ChatService
+from services.ai.completion_service import CompletionService
 from modules.document.service import DocumentService
 from modules.pipeline.service import PipelineService
 from modules.auth.service import AuthService
@@ -121,6 +122,23 @@ def get_pipeline_executor_instance() -> PipelineExecutor:
     logger.info("PipelineExecutor singleton initialized.")
     return instance
 
+@lru_cache(maxsize=None)
+def get_completion_service_instance() -> CompletionService:
+    """Creates and returns a singleton CompletionService instance."""
+    logger.info("Initializing singleton CompletionService instance...")
+    llm_client = get_llm_client_instance()
+    # Add handling if llm_client is None, maybe raise error or return a dummy?
+    # For now, assume it succeeds or raises within get_llm_client_instance if fatal
+    if llm_client is None:
+        # Option 1: Raise error to prevent app start without LLM
+        raise RuntimeError("LLM Client could not be initialized. CompletionService cannot start.")
+        # Option 2: Log error and return None or a dummy service (if applicable)
+        # logger.error("LLM Client is None, CompletionService may not function.")
+        # return None # Or a dummy service instance
+    instance = CompletionService(llm_client=llm_client)
+    logger.info("CompletionService singleton initialized.")
+    return instance
+
 # --- FastAPI Dependency Functions --- 
 # These functions simply call the singleton instance getters
 
@@ -141,6 +159,9 @@ def get_auth_service() -> AuthService:
 
 def get_pipeline_executor() -> PipelineExecutor:
     return get_pipeline_executor_instance()
+
+def get_completion_service() -> CompletionService:
+    return get_completion_service_instance()
 
 # Note: The get_db dependency still likely resides in core/deps.py or similar
 # as it manages session lifecycle per request, not a singleton service. # <-- This is now incorrect, get_db is imported above

@@ -172,7 +172,7 @@ async def update_user(
             )
         
         # Special rules for superadmin
-        if existing_user["role"] == "superadmin" and current_user.role != "superadmin":
+        if existing_user.role == "superadmin" and current_user.role != "superadmin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, 
                 detail="Only a superadmin can modify another superadmin"

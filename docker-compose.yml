@@ -49,6 +49,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
+    environment:
+      - PYTHONPATH=/app
+      - DOCUMENT_STORAGE_PATH=/app/storage/documents
     entrypoint: ["./docker-entrypoint.sh"]
     command: celery -A tasks.worker:celery_app worker --loglevel=info
     volumes:

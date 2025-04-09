@@ -53,25 +53,27 @@ class OpenAIClient(LLMClientInterface):
         request_params = {k: v for k, v in request_params.items() if v is not None}
         
         try:
-            logger.debug(f"Calling OpenAI chat completion: model={model}, stream={stream}, messages={messages}")
-            response = await self.client.chat.completions.create(**request_params)
+            logger.debug(f"Calling OpenAI Chat Completions API: model={model}, stream={stream}, messages={messages}")
+            response_or_stream = await self.client.chat.completions.create(**request_params)
             
             if stream:
-                # Define an async generator to yield content chunks
+                # Standard stream handling for chat completions
                 async def stream_generator():
-                    async for chunk in response:
-                        content = chunk.choices[0].delta.content
-                        if content is not None:
-                            yield content
+                    async for chunk in response_or_stream:
+                        content_delta = chunk.choices[0].delta.content
+                        if content_delta is not None:
+                            yield content_delta
                 return stream_generator()
             else:
-                # Return the complete message content as a string
-                full_response = response.choices[0].message.content
-                logger.debug(f"Received OpenAI chat completion response: {full_response[:100]}...")
-                return full_response if full_response is not None else "" # Ensure string return
+                # Standard non-streaming response handling
+                full_response_content = response_or_stream.choices[0].message.content
+                logger.debug(f"Received OpenAI Chat Completions API response: {full_response_content[:100]}...")
+                # Ensure string return, handle potential None case
+                return full_response_content if full_response_content is not None else "" 
 
         except Exception as e:
-            logger.error(f"OpenAI API error during chat completion: {e}", exc_info=True)
+            # Log the specific API error
+            logger.error(f"OpenAI Chat Completions API error: {e}", exc_info=True)
             # Re-raise or handle specific OpenAI errors if needed
             raise
 

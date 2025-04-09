@@ -2,7 +2,7 @@ import os
 import uuid
 from pathlib import Path
 from dotenv import load_dotenv
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import UUID
@@ -19,22 +19,23 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.future import select
 import asyncio
 import aiofiles
+from sqlalchemy.dialects.postgresql import insert # Use for upsert
 
 # Import the LLM interface
 from core.llm_interface import LLMClientInterface
-from database.models.document import Document, DocumentEmbedding, DocumentProcessingResult # Ensure ProcessingResult model is imported
-from database.models.pipeline import PipelineExecution, Pipeline # Import pipeline models
-from schemas.document import DocumentCreate, DocumentUpdate, DocumentResponse, DocumentProcessingResultResponse, PipelineExecutionResponse # Import necessary schemas
+from database.models.document import Document, DocumentEmbedding, DocumentProcessingResult
+from database.models.pipeline import PipelineExecution, Pipeline
+from schemas.document import DocumentCreate, DocumentUpdate, DocumentResponse, DocumentProcessingResultResponse, PipelineExecutionResponse
 from core.config import settings
 # Configure logger
 logger = logging.getLogger(__name__)
 
 # Load environment variables
-load_dotenv()
+# load_dotenv() # Removed, should be handled centrally if needed
 
-
-# Ensure that the storage directory exists
-os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
+# Ensure that the storage directory exists - REMOVED as it caused permission errors in worker
+# and is handled within create_document method.
+# os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
 
 class DocumentService:
     def __init__(self, llm_client: Optional[LLMClientInterface] = None):

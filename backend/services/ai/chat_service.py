@@ -4,8 +4,6 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc
-from openai import AsyncOpenAI
-import httpx
 import json
 import logging
 

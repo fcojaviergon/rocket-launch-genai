@@ -125,7 +125,7 @@ prompt-toolkit==3.0.50
     # via click-repl
 psutil==7.0.0
     # via -r requirements.in
-psycopg2==2.9.10
+psycopg2-binary==2.9.10
     # via -r requirements.in
 pyasn1==0.4.8
     # via
