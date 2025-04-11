@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from database.models.document import Document
     from database.models.conversation import Conversation
     from database.models.pipeline import Pipeline, PipelineExecution
-
+    from database.models.agent import AgentConversation
 class User(BaseModel):
     """Model for user"""
     __tablename__ = "users"
@@ -28,3 +28,4 @@ class User(BaseModel):
     conversations: Mapped[List[Conversation]] = relationship(back_populates="user", cascade="all, delete-orphan")
     pipelines: Mapped[List[Pipeline]] = relationship(back_populates="user", cascade="all, delete-orphan")
     pipeline_executions: Mapped[List[PipelineExecution]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    agent_conversations: Mapped[List[AgentConversation]] = relationship(back_populates="user", cascade="all, delete-orphan")

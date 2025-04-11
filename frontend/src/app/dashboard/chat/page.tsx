@@ -18,11 +18,13 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { MessageSquareIcon } from 'lucide-react';
+import { McpServersPanel } from '@/components/ui/McpServersPanel';
+import { ChatMessage } from '@/components/ChatMessage';
 
 interface Message {
   id: string;
   content: string;
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'tool' | 'thinking';
   timestamp: string;
 }
 
@@ -49,6 +51,8 @@ export default function ChatPage() {
   const [streamedContent, setStreamedContent] = useState<string>("");
   const [useStreaming, setUseStreaming] = useState<boolean>(true);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [showThinking, setShowThinking] = useState<boolean>(false);
+  const [showToolCalls, setShowToolCalls] = useState<boolean>(true);
 
   // Load token when starting with support for refresh token
   useEffect(() => {
@@ -172,58 +176,40 @@ export default function ChatPage() {
     try {
       setIsLoading(true);
       
-      let data;
+      // Usar endpoint para mensajes detallados con opciones para thinking
+      const endpoint = showThinking ? 
+        `/api/v1/agent/conversations/${conversationId}/detailed-messages?include_thinking=true&include_tool_calls=${showToolCalls}` :
+        `/api/v1/agent/conversations/${conversationId}/messages`;
       
-      try {
-        // Try with httpClient first
-        if (apiClient && apiClient.get) {
-          data = await apiClient.get<Conversation>(`/api/v1/chat/conversations/${conversationId}`);
-        } else {
-          // Fallback to apiClient
-          data = await apiClient.get<Conversation>(`/api/v1/chat/conversations/${conversationId}`);
-        }
-      } catch (apiError: any) {
-        console.error('Error con el cliente HTTP:', apiError);
-        
-        // Verify if it is an authentication error
-        if (apiError.isAuthError || apiError.response?.status === 401) {
-          setError('Your session has expired. Please reload the page to login again.');
-          setIsLoading(false);
-          // No redirect automatically
-          return null;
-        }
-        
-        // For other errors, try with apiClient directly
-        data = await apiClient.get<Conversation>(`/api/v1/chat/conversations/${conversationId}`);
+      const messagesResponse = await apiClient.get<Message[]>(endpoint);
+      
+      // Obtener los detalles de la conversación
+      const conversationResponse = await apiClient.get<Conversation>(`/api/v1/chat/conversations/${conversationId}`);
+      
+      // Combinamos la respuesta
+      const conversation = {
+        ...conversationResponse,
+        messages: messagesResponse
+      };
+      
+      // Asegurar que los mensajes tengan IDs únicos
+      if (conversation.messages) {
+        conversation.messages = conversation.messages.map(msg => ({
+          ...msg,
+          id: msg.id || `msg-${Math.random().toString(36).substring(2, 11)}`
+        }));
       }
       
-      // Ensure that the messages have unique IDs
-      if (data && data.messages) {
-        const uniqueMessages = data.messages.map((msg: Message, index: number) => {
-          // If the message does not have an ID, generate one
-          if (!msg.id) {
-            return {
-              ...msg,
-              id: `${msg.role}-${index}-${Date.now()}`
-            };
-          }
-          return msg;
-        });
-        
-        data.messages = uniqueMessages;
-      }
-      
-      setCurrentConversation(data);
-      return data;
+      setCurrentConversation(conversation);
+      return conversation;
     } catch (error: any) {
       console.error('Error:', error);
       
-      // Verify if it is an authentication error
+      // Verificar si es un error de autenticación
       if (error.isAuthError || error.response?.status === 401) {
         setError('Your session has expired. Please reload the page to login again.');
-        // No redirect automatically
       } else {
-        setError('Could not load the conversation: ' + error.message);
+        setError(`Could not load conversation: ${error.message}`);
       }
       return null;
     } finally {
@@ -854,302 +840,322 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-4rem)]">
-      {/* Sidebar with conversations */}
-      <div className="chat-sidebar">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Conversations</h2>
-          <div className="flex space-x-1">
-            <Button 
-              variant="ghost"
-              size="sm"
-              onClick={() => loadConversations()}
-              title="Refresh list"
-              className="h-8 w-8 p-0 text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100"
-            >
-              <RefreshCw className="h-4 w-4" />
-            </Button>
-            <Button 
-              size="sm" 
-              onClick={handleNewConversation}
-              className="btn-primary h-8"
-            >
-              <PlusIcon className="h-4 w-4 mr-1" />
-              New
-            </Button>
-          </div>
+    <div className="flex h-screen flex-col">
+      <div className="border-b px-4 py-2 flex justify-between items-center">
+        <div className="flex items-center gap-2">
+          <MessageSquareIcon className="h-5 w-5" />
+          <h1 className="text-lg font-semibold">Chat</h1>
         </div>
         
-        <div className="overflow-y-auto flex-grow">
-          {conversations.length === 0 ? (
-            <div className="text-center py-8 text-gray-500 dark:text-gray-400 text-sm italic">
-              No conversations yet
-            </div>
-          ) : (
-            conversations.map((conversation: Conversation) => (
-              <div 
-                key={conversation.id}
-                className={`chat-conversation-item ${currentConversation?.id === conversation.id ? 'active' : ''}`}
-                onClick={() => loadConversation(conversation.id)}
-              >
-                {editingConversation === conversation.id ? (
-                  <div className="flex items-center w-full">
-                    <Input
-                      className="h-8 text-sm mr-1 w-full"
-                      value={newTitle}
-                      onChange={(e) => setNewTitle(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          handleUpdateTitle(conversation.id);
-                        } else if (e.key === 'Escape') {
-                          setEditingConversation(null);
-                        }
-                      }}
-                      autoFocus
-                    />
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 w-8 text-blue-600 dark:text-blue-400"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleUpdateTitle(conversation.id);
-                      }}
-                    >
-                      <CheckIcon className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 w-8 text-gray-500 dark:text-gray-400"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setEditingConversation(null);
-                      }}
-                    >
-                      <Cross1Icon className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex flex-col">
-                    <div className="flex justify-between items-start">
-                      <div className="chat-conversation-title">
-                        {conversation.title || 'New conversation'}
-                      </div>
-                      <div className="flex">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setNewTitle(conversation.title);
-                            setEditingConversation(conversation.id);
-                          }}
-                        >
-                          <Pencil1Icon className="h-3 w-3 text-gray-500 dark:text-gray-400" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (window.confirm('Are you sure you want to delete this conversation?')) {
-                              handleDeleteConversation(conversation.id);
-                            }
-                          }}
-                        >
-                          <TrashIcon className="h-3 w-3 text-red-500" />
-                        </Button>
-                      </div>
-                    </div>
-                    <div className="chat-conversation-date">
-                      {new Date(conversation.updated_at).toLocaleDateString()}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-        
-        <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-          <div className="flex items-center justify-between mb-2">
-            <Label htmlFor="streamingToggle" className="text-sm text-gray-700 dark:text-gray-300">
-              Streaming
-            </Label>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center space-x-2">
             <Switch 
-              id="streamingToggle" 
-              checked={useStreaming} 
-              onCheckedChange={setUseStreaming}
+              id="show-thinking" 
+              checked={showThinking}
+              onCheckedChange={value => {
+                setShowThinking(value);
+                if (currentConversation) {
+                  loadConversation(currentConversation.id);
+                }
+              }}
             />
+            <Label htmlFor="show-thinking">Show thinking process</Label>
           </div>
+          
+          <div className="flex items-center space-x-2">
+            <Switch 
+              id="show-tools" 
+              checked={showToolCalls}
+              onCheckedChange={value => {
+                setShowToolCalls(value);
+                if (currentConversation) {
+                  loadConversation(currentConversation.id);
+                }
+              }}
+            />
+            <Label htmlFor="show-tools">Show tool calls</Label>
+          </div>
+          
+          <McpServersPanel />
         </div>
       </div>
-
-      {/* Main chat area */}
-      <div className="chat-main">
-        {error && (
-          <div className="p-4 bg-red-100 dark:bg-red-900/30 border-l-4 border-red-500 text-red-700 dark:text-red-300">
-            <div className="flex">
-              <div className="py-1">
-                <svg className="h-6 w-6 text-red-500 mr-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-semibold">{error}</p>
-                <Button variant="ghost" size="sm" onClick={resetError} className="mt-2 text-red-700 dark:text-red-300">
-                  Close
-                </Button>
-              </div>
+      
+      <div className="flex flex-1 overflow-hidden">
+        <div className="w-64 border-r flex flex-col overflow-hidden">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Conversations</h2>
+            <div className="flex space-x-1">
+              <Button 
+                variant="ghost"
+                size="sm"
+                onClick={() => loadConversations()}
+                title="Refresh list"
+                className="h-8 w-8 p-0 text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+              <Button 
+                size="sm" 
+                onClick={handleNewConversation}
+                className="btn-primary h-8"
+              >
+                <PlusIcon className="h-4 w-4 mr-1" />
+                New
+              </Button>
             </div>
           </div>
-        )}
-
-        {!currentConversation ? (
-          <div className="flex-1 flex flex-col justify-center items-center p-8 text-center">
-            <div className="mb-4 rounded-full bg-primary/10 p-3">
-              <MessageSquareIcon className="h-6 w-6 text-primary" />
-            </div>
-            <h3 className="text-xl font-semibold mb-1">Start a new conversation</h3>
-            <p className="text-muted-foreground mb-6 max-w-md">
-              Write a message to start the conversation
-            </p>
-            <Button onClick={handleNewConversation} className="mt-2">
-              New conversation
-            </Button>
+          
+          <div className="overflow-y-auto flex-grow">
+            {conversations.length === 0 ? (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400 text-sm italic">
+                No conversations yet
+              </div>
+            ) : (
+              conversations.map((conversation: Conversation) => (
+                <div 
+                  key={conversation.id}
+                  className={`chat-conversation-item ${currentConversation?.id === conversation.id ? 'active' : ''}`}
+                  onClick={() => loadConversation(conversation.id)}
+                >
+                  {editingConversation === conversation.id ? (
+                    <div className="flex items-center w-full">
+                      <Input
+                        className="h-8 text-sm mr-1 w-full"
+                        value={newTitle}
+                        onChange={(e) => setNewTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleUpdateTitle(conversation.id);
+                          } else if (e.key === 'Escape') {
+                            setEditingConversation(null);
+                          }
+                        }}
+                        autoFocus
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 text-blue-600 dark:text-blue-400"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleUpdateTitle(conversation.id);
+                        }}
+                      >
+                        <CheckIcon className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 text-gray-500 dark:text-gray-400"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingConversation(null);
+                        }}
+                      >
+                        <Cross1Icon className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col">
+                      <div className="flex justify-between items-start">
+                        <div className="chat-conversation-title">
+                          {conversation.title || 'New conversation'}
+                        </div>
+                        <div className="flex">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setNewTitle(conversation.title);
+                              setEditingConversation(conversation.id);
+                            }}
+                          >
+                            <Pencil1Icon className="h-3 w-3 text-gray-500 dark:text-gray-400" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm('Are you sure you want to delete this conversation?')) {
+                                handleDeleteConversation(conversation.id);
+                              }
+                            }}
+                          >
+                            <TrashIcon className="h-3 w-3 text-red-500" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="chat-conversation-date">
+                        {new Date(conversation.updated_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
           </div>
-        ) : (
-          <>
-            <div className="chat-header">
-              <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
-                {currentConversation.title || 'New conversation'}
-              </h2>
-              <div className="flex items-center">
-                {isStreaming && (
-                  <div className="flex items-center mr-4 text-blue-600 dark:text-blue-400">
-                    <Loader className="animate-spin h-4 w-4 mr-2" />
-                    <span className="text-sm">Processing...</span>
+          
+          <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+            <div className="flex items-center justify-between mb-2">
+              <Label htmlFor="streamingToggle" className="text-sm text-gray-700 dark:text-gray-300">
+                Streaming
+              </Label>
+              <Switch 
+                id="streamingToggle" 
+                checked={useStreaming} 
+                onCheckedChange={setUseStreaming}
+              />
+            </div>
+          </div>
+        </div>
+        
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {error && (
+            <div className="p-4 bg-red-100 dark:bg-red-900/30 border-l-4 border-red-500 text-red-700 dark:text-red-300">
+              <div className="flex">
+                <div className="py-1">
+                  <svg className="h-6 w-6 text-red-500 mr-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="font-semibold">{error}</p>
+                  <Button variant="ghost" size="sm" onClick={resetError} className="mt-2 text-red-700 dark:text-red-300">
+                    Close
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!currentConversation ? (
+            <div className="flex-1 flex flex-col justify-center items-center p-8 text-center">
+              <div className="mb-4 rounded-full bg-primary/10 p-3">
+                <MessageSquareIcon className="h-6 w-6 text-primary" />
+              </div>
+              <h3 className="text-xl font-semibold mb-1">Start a new conversation</h3>
+              <p className="text-muted-foreground mb-6 max-w-md">
+                Write a message to start the conversation
+              </p>
+              <Button onClick={handleNewConversation} className="mt-2">
+                New conversation
+              </Button>
+            </div>
+          ) : (
+            <>
+              <div className="chat-header">
+                <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
+                  {currentConversation.title || 'New conversation'}
+                </h2>
+                <div className="flex items-center">
+                  {isStreaming && (
+                    <div className="flex items-center mr-4 text-blue-600 dark:text-blue-400">
+                      <Loader className="animate-spin h-4 w-4 mr-2" />
+                      <span className="text-sm">Processing...</span>
+                    </div>
+                  )}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="sm" className="btn-icon">
+                        <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                        </svg>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem 
+                        onClick={() => {
+                          setNewTitle(currentConversation.title);
+                          setEditingConversation(currentConversation.id);
+                        }}
+                      >
+                        <Pencil1Icon className="mr-2 h-4 w-4" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={() => {
+                          if (window.confirm('Are you sure you want to delete this conversation?')) {
+                            handleDeleteConversation(currentConversation.id);
+                          }
+                        }}
+                        className="text-red-600 focus:text-red-600"
+                      >
+                        <TrashIcon className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+
+              <div className="chat-messages-container">
+                {currentConversation.messages.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    Write a message to start the conversation
+                  </div>
+                ) : (
+                  // Filter duplicate messages using a Set for IDs
+                  [...new Map(currentConversation.messages.map(msg => [msg.id, msg])).values()].map((msg) => (
+                    <ChatMessage 
+                      key={`${msg.id}-${msg.role}`} 
+                      message={msg} 
+                      isLast={msg.role === 'user'}
+                    />
+                  ))
+                )}
+                
+                {isStreaming && streamedContent && (
+                  <div className="chat-message chat-message-assistant">
+                    <div className="flex items-start">
+                      <div className="flex-shrink-0 mr-2">
+                        <BotIcon className="h-6 w-6 text-gray-600 dark:text-gray-400" />
+                      </div>
+                      <div className="chat-message-content">
+                        {streamedContent}
+                      </div>
+                    </div>
                   </div>
                 )}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="btn-icon">
-                      <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                      </svg>
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem 
-                      onClick={() => {
-                        setNewTitle(currentConversation.title);
-                        setEditingConversation(currentConversation.id);
-                      }}
-                    >
-                      <Pencil1Icon className="mr-2 h-4 w-4" />
-                      Rename
-                    </DropdownMenuItem>
-                    <DropdownMenuItem 
-                      onClick={() => {
-                        if (window.confirm('Are you sure you want to delete this conversation?')) {
-                          handleDeleteConversation(currentConversation.id);
-                        }
-                      }}
-                      className="text-red-600 focus:text-red-600"
-                    >
-                      <TrashIcon className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                
+                <div ref={messagesEndRef} />
               </div>
-            </div>
 
-            <div className="chat-messages-container">
-              {currentConversation.messages.length === 0 ? (
-                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                  Write a message to start the conversation
-                </div>
-              ) : (
-                // Filter duplicate messages using a Set for IDs
-                [...new Map(currentConversation.messages.map(msg => [msg.id, msg])).values()].map((msg) => (
-                  <div 
-                    key={`${msg.id}-${msg.role}`} 
-                    className={`chat-message chat-message-${msg.role}`}
+              <div className="chat-input-container">
+                <form onSubmit={handleSubmit} className="flex">
+                  <Input
+                    ref={inputRef}
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    placeholder="Type a message..."
+                    className="flex-1 min-w-0 bg-background ring-offset-background border-input"
+                    disabled={isLoading || (currentConversation && currentConversation.messages.length > 1 && currentConversation.messages[currentConversation.messages.length - 1].role === 'user')}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleSubmit(e);
+                      }
+                    }}
+                  />
+                  <Button 
+                    type="submit" 
+                    className="ml-2 btn-primary px-4 flex items-center"
+                    disabled={isLoading || !message.trim()}
                   >
-                    {msg.role === 'user' ? (
-                      <div className="flex items-start">
-                        <div className="chat-message-content">
-                          {msg.content}
-                        </div>
-                        <div className="flex-shrink-0 ml-2">
-                          <UserCircle className="h-6 w-6 text-blue-600 dark:text-blue-400" />
-                        </div>
-                      </div>
+                    {isLoading ? (
+                      <Loader className="h-5 w-5 animate-spin" />
                     ) : (
-                      <div className="flex items-start">
-                        <div className="flex-shrink-0 mr-2">
-                          <BotIcon className="h-6 w-6 text-gray-600 dark:text-gray-400" />
-                        </div>
-                        <div className="chat-message-content">
-                          {msg.content}
-                        </div>
-                      </div>
+                      <ArrowRight className="h-5 w-5" />
                     )}
-                  </div>
-                ))
-              )}
-              
-              {isStreaming && streamedContent && (
-                <div className="chat-message chat-message-assistant">
-                  <div className="flex items-start">
-                    <div className="flex-shrink-0 mr-2">
-                      <BotIcon className="h-6 w-6 text-gray-600 dark:text-gray-400" />
-                    </div>
-                    <div className="chat-message-content">
-                      {streamedContent}
-                    </div>
-                  </div>
-                </div>
-              )}
-              
-              <div ref={messagesEndRef} />
-            </div>
-
-            <div className="chat-input-container">
-              <form onSubmit={handleSubmit} className="flex">
-                <Input
-                  ref={inputRef}
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  placeholder="Type a message..."
-                  className="flex-1 min-w-0 bg-background ring-offset-background border-input"
-                  disabled={isLoading || (currentConversation && currentConversation.messages.length > 1 && currentConversation.messages[currentConversation.messages.length - 1].role === 'user')}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleSubmit(e);
-                    }
-                  }}
-                />
-                <Button 
-                  type="submit" 
-                  className="ml-2 btn-primary px-4 flex items-center"
-                  disabled={isLoading || !message.trim()}
-                >
-                  {isLoading ? (
-                    <Loader className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <ArrowRight className="h-5 w-5" />
-                  )}
-                </Button>
-              </form>
-            </div>
-          </>
-        )}
+                  </Button>
+                </form>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

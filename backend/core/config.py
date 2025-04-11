@@ -1,13 +1,73 @@
-from pydantic import PostgresDsn, field_validator, ValidationError
+from pydantic import PostgresDsn, field_validator, ValidationError, BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, Dict, Any, List, Union, ClassVar
 import secrets
 import os
 import re
 import logging
+import json
 
-# Setup logger for this module
+# Setup logger EARLY for use in helper functions
 logger = logging.getLogger(__name__)
+# Set a basic level temporarily in case main config hasn't run yet
+# This might be overridden later by your main logging config
+if not logger.hasHandlers():
+    logging.basicConfig(level=logging.INFO) 
+
+# --- MCP Server Configuration Model --- 
+# Name is now the key in the dictionary, removed from here
+class MCPServerConfig(BaseModel):
+    type: str = "stdio"
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
+    address: Optional[str] = None
+
+# --- Helper function to get project root and backend root --- 
+def get_project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+PROJECT_ROOT = get_project_root()
+BACKEND_ROOT = os.path.join(PROJECT_ROOT, "backend") # Define backend root
+
+# --- Load MCP Servers from JSON file (if exists) and set ENV VAR --- 
+MCP_CONFIG_FILENAME = "mcp_servers.json"
+MCP_ENV_VAR = "MCP_SERVERS"
+
+def load_mcp_config_from_file() -> None:
+    config_path = os.path.join(BACKEND_ROOT, MCP_CONFIG_FILENAME) 
+    logger.info(f"[MCP Load] Checking for MCP config at: {config_path}") # DEBUG LOG
+    
+    if os.path.exists(config_path):
+        logger.info(f"[MCP Load] Found MCP config file: {config_path}. Attempting to load.")
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+            logger.info("[MCP Load] Successfully read JSON file content.") # DEBUG LOG
+            
+            mcp_servers_dict = data.get("mcpServers")
+            
+            if isinstance(mcp_servers_dict, dict):
+                logger.info(f"[MCP Load] Found 'mcpServers' dictionary with {len(mcp_servers_dict)} entries.") # DEBUG LOG
+                mcp_servers_json_string = json.dumps(mcp_servers_dict)
+                os.environ[MCP_ENV_VAR] = mcp_servers_json_string
+                logger.info(f"[MCP Load] Successfully loaded MCP server config into env var {MCP_ENV_VAR}.")
+            elif mcp_servers_dict is None:
+                 logger.warning(f"[MCP Load] '{MCP_CONFIG_FILENAME}' found, but does not contain 'mcpServers' key.")
+            else:
+                 logger.warning(f"[MCP Load] 'mcpServers' key in '{MCP_CONFIG_FILENAME}' is not a dictionary (type: {type(mcp_servers_dict).__name__}).")
+                 
+        except json.JSONDecodeError as e:
+            logger.error(f"[MCP Load] Error decoding JSON from {config_path}: {e}")
+        except IOError as e:
+            logger.error(f"[MCP Load] Error reading MCP config file {config_path}: {e}")
+        except Exception as e:
+            logger.error(f"[MCP Load] Unexpected error loading MCP config from file: {e}", exc_info=True)
+    else:
+        logger.info(f"[MCP Load] MCP config file not found at {config_path}. Relying on env var {MCP_ENV_VAR} if set.")
+
+# --- Load MCP config *before* Settings initialization --- 
+load_mcp_config_from_file()
 
 class Settings(BaseSettings):
     # API configuration
@@ -46,11 +106,9 @@ class Settings(BaseSettings):
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
         if isinstance(v, str):
-            # Handle comma-separated string from env var
             return [i.strip() for i in v.split(",") if i.strip()]
         elif isinstance(v, list):
             return v
-        # Allow empty list if nothing is provided
         elif v is None:
             return []
         raise ValueError(f"Invalid format for BACKEND_CORS_ORIGINS: {v}")
@@ -73,15 +131,59 @@ class Settings(BaseSettings):
     DEFAULT_CHAT_MODEL: str = os.environ.get("DEFAULT_CHAT_MODEL", "gpt-4")
     DEFAULT_EMBEDDING_MODEL: str = os.environ.get("DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small")
     
+    # --- MCP Server Configuration --- 
+    # Expecting a dictionary structure, potentially loaded from JSON/YAML 
+    # or from an ENV VAR containing the JSON string representation of the dict.
+    MCP_SERVERS: Dict[str, MCPServerConfig] = {}
+
+    @field_validator('MCP_SERVERS', mode='before')
+    def parse_mcp_servers_dict(cls, v) -> Dict[str, MCPServerConfig]:
+        # This validator now primarily handles the JSON string loaded from the env var 
+        # (either set manually or by our helper function)
+        if isinstance(v, str):
+            if not v.strip() or v.strip() == "{}":
+                return {} 
+            try:
+                servers_data = json.loads(v)
+                if not isinstance(servers_data, dict):
+                    raise TypeError("MCP_SERVERS JSON string must represent a dictionary.")
+                
+                validated_dict = {name: MCPServerConfig(**config) for name, config in servers_data.items()}
+                for name, config in validated_dict.items():
+                     if config.type == "stdio" and not config.command:
+                        raise ValueError(f"MCP server '{name}' of type 'stdio' must have a 'command'.")
+                logger.info(f"[Settings] Successfully parsed MCP_SERVERS env var into config dictionary.") # Added log
+                return validated_dict
+            except json.JSONDecodeError as e:
+                logger.error(f"[Settings] Error decoding MCP_SERVERS JSON string from env var: {e}")
+                raise ValueError(f"Invalid JSON string in MCP_SERVERS env var: {e}")
+            except ValidationError as e:
+                logger.error(f"[Settings] Validation error parsing MCP_SERVERS from env var: {e}")
+                raise ValueError(f"Invalid MCP server configuration in env var: {e}")
+            except Exception as e:
+                 logger.error(f"[Settings] Error processing MCP_SERVERS from env var: {e}", exc_info=True)
+                 raise ValueError(f"Could not process MCP_SERVERS env var: {e}")
+        # Allow it to be pre-populated if already a dict (e.g., in testing)
+        elif isinstance(v, dict):
+            logger.debug("[Settings] MCP_SERVERS provided as dictionary directly.")
+            # Optionally re-validate here if needed, but assume valid if passed directly
+            return v 
+        elif v is None:
+             logger.info("[Settings] MCP_SERVERS is None, returning empty config.") # Added log
+             return {} 
+        else:
+             logger.error(f"[Settings] Invalid type for MCP_SERVERS: {type(v).__name__}")
+             raise TypeError("MCP_SERVERS must be a dictionary or a valid JSON string representing a dictionary.")
+
     # Document storage
     # Calculate path relative to the project root for local development default
     _local_project_root: ClassVar[str] = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    _default_local_storage_path: ClassVar[str] = os.path.join(_local_project_root, "backend", "storage", "documents")
+    _default_local_storage_path: ClassVar[str] = os.path.join(BACKEND_ROOT, "storage", "documents")
     # Use env var for Docker override, default to calculated local path
     DOCUMENT_STORAGE_PATH: str = os.environ.get("CONTAINER_DOCUMENT_STORAGE_PATH", _default_local_storage_path)
 
     # Logging
-    _default_local_log_path: ClassVar[str] = os.path.join(_local_project_root, "backend", "logs")
+    _default_local_log_path: ClassVar[str] = os.path.join(BACKEND_ROOT, "logs")
     # Use env var for Docker override, default to calculated local path
     LOG_DIR: str = os.environ.get("CONTAINER_LOG_DIR", _default_local_log_path)
 
@@ -183,6 +285,14 @@ class Settings(BaseSettings):
             logger.info(f"OPENAI_API_KEY is set (starts with: {self.OPENAI_API_KEY[:5]}...).")
         else:
             logger.warning("OPENAI_API_KEY is not set or empty.")
+
+        # Log MCP Server Info (Safely)
+        if self.MCP_SERVERS:
+            logger.info(f"Loaded {len(self.MCP_SERVERS)} MCP Server configurations:")
+            for name, server in self.MCP_SERVERS.items(): # Iterate through dict
+                 logger.info(f"  - Name: {name}, Type: {server.type}") # Log only non-sensitive info
+        else:
+            logger.info("No MCP Servers configured.")
 
         # Log database URLs (sanitized)
         try:

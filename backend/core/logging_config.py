@@ -6,8 +6,10 @@ import time
 import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
+from uuid import UUID
 
 from core.config import settings
+from core.serialization import dumps_with_uuids
 
 class JsonFormatter(logging.Formatter):
     """
@@ -43,7 +45,7 @@ class JsonFormatter(logging.Formatter):
         if hasattr(record, "extra") and isinstance(record.extra, dict):
             log_data.update(record.extra)
             
-        return json.dumps(log_data)
+        return dumps_with_uuids(log_data)
 
 class ContextAdapter(logging.LoggerAdapter):
     """

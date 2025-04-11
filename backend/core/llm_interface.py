@@ -59,5 +59,42 @@ class LLMClientInterface(ABC):
         """
         pass
 
+    async def chat(self, messages: List[Dict[str, Any]], tools: Optional[List[Any]] = None) -> Dict[str, Any]:
+        """
+        Simplified interface for non-streaming LLM chat completion.
+        
+        Args:
+            messages: A list of message dictionaries with role and content.
+            tools: Optional list of tools that can be called by the LLM.
+            
+        Returns:
+            The complete response as a dictionary with the LLM's reply.
+        """
+        # Default implementation that can be overridden by subclasses
+        model = self._get_default_model()
+        return await self.generate_chat_completion(messages, model, stream=False)
+        
+    async def stream_chat(self, messages: List[Dict[str, Any]], tools: Optional[List[Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Simplified interface for streaming LLM chat completion.
+        
+        Args:
+            messages: A list of message dictionaries with role and content.
+            tools: Optional list of tools that can be called by the LLM.
+            
+        Yields:
+            Chunks of the LLM's response as they become available.
+        """
+        # Default implementation that can be overridden by subclasses
+        model = self._get_default_model()
+        # Get streaming generator - don't await here
+        generator = self.generate_chat_completion(messages, model, stream=True)
+        async for chunk in generator:
+            yield chunk
+            
+    def _get_default_model(self) -> str:
+        """Get the default model for this provider."""
+        return "gpt-4o"  # Default model, should be overridden by subclasses
+
     # Add other abstract methods for different capabilities if needed later
     # e.g., generate_image, classify_text, etc. 

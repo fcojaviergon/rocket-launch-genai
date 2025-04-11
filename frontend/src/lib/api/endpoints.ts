@@ -65,5 +65,9 @@ export const ENDPOINTS = {
   
   COMPLETIONS: {
     CREATE: `${API_PREFIX}/completions`,
+  },
+
+  AGENT: {
+    INVOKE: `${API_PREFIX}/agent/invoke`,
   }
 };

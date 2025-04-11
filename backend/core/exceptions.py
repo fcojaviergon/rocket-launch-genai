@@ -4,9 +4,11 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import traceback
 from pydantic import ValidationError
+import json
 
 from core.logging_config import get_logger
 from core.config import settings
+from core.serialization import UUIDEncoder
 
 logger = get_logger("app.exceptions")
 
@@ -34,7 +36,7 @@ def setup_exception_handlers(app: FastAPI):
         
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": exc.detail},
+            content={"detail": exc.detail}
         )
     
     @app.exception_handler(RequestValidationError)
@@ -67,7 +69,7 @@ def setup_exception_handlers(app: FastAPI):
             content={
                 "detail": "Validation error",
                 "errors": readable_errors
-            },
+            }
         )
     
     @app.exception_handler(ValidationError)
@@ -91,7 +93,7 @@ def setup_exception_handlers(app: FastAPI):
             content={
                 "detail": "Data validation error",
                 "errors": exc.errors()
-            },
+            }
         )
     
     @app.exception_handler(AppException)
@@ -109,7 +111,7 @@ def setup_exception_handlers(app: FastAPI):
         
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": exc.detail},
+            content={"detail": exc.detail}
         )
     
     @app.exception_handler(Exception)
@@ -139,7 +141,7 @@ def setup_exception_handlers(app: FastAPI):
         if settings.ENVIRONMENT == "production":
             return JSONResponse(
                 status_code=500,
-                content={"detail": "Internal server error"},
+                content={"detail": "Internal server error"}
             )
         
         # In development, return more details
@@ -149,5 +151,5 @@ def setup_exception_handlers(app: FastAPI):
                 "detail": "Internal server error",
                 "message": str(exc),
                 "traceback": tb
-            },
+            }
         ) 

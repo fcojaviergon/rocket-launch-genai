@@ -248,6 +248,17 @@ export const api = {
       apiClient.post(ENDPOINTS.COMPLETIONS.CREATE, data),
   },
 
+  // Agent
+  agent: {
+    /**
+     * Sends a query to the agent and returns the final response.
+     * @param data The query data, usually { query: string }
+     * @returns Promise<{ response: string }>
+     */
+    invoke: (data: { query: string }) => 
+      apiClient.post<{ response: string }>(ENDPOINTS.AGENT.INVOKE, data),
+  },
+
   stats: {
     getDashboard: () => 
       apiClient.get(ENDPOINTS.STATS.DASHBOARD),

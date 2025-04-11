@@ -27,12 +27,15 @@
     flower>=2.0.0 # Optional: For monitoring Celery
     gevent>=24.11.1 # Check if gevent worker pool is used
 
-    # External Services / LLM
+    # External Services / LLM / Agent
     openai>=1.12.0
     tiktoken>=0.9.0 # If used directly
     anthropic==0.49.0
     anyio==4.9.0
     aiofiles==23.1.0
+    mcp # Model Context Protocol SDK
+    asteval # For safe evaluation in calculator tool
+
     # File Handling / Processing (Consider moving to worker requirements if not needed by API)
     python-multipart>=0.0.6 # For FastAPI file uploads
     numpy>=2.2.4

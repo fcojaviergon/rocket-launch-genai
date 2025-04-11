@@ -15,7 +15,7 @@ from modules.document.service import DocumentService
 from modules.pipeline.service import PipelineService
 from modules.auth.service import AuthService
 from modules.pipeline.executor import PipelineExecutor
-
+from modules.agent.service import AgentService
 # Import Settings
 from core.config import settings
 
@@ -139,6 +139,16 @@ def get_completion_service_instance() -> CompletionService:
     logger.info("CompletionService singleton initialized.")
     return instance
 
+@lru_cache(maxsize=None)
+def get_agent_service_instance() -> AgentService:
+    """Creates and returns a singleton AgentService instance."""
+    logger.info("Initializing singleton AgentService instance...")
+    
+    # Create the service instance - AgentService no longer takes arguments in __init__
+    instance = AgentService()
+    logger.info("AgentService singleton initialized.")
+    return instance
+
 # --- FastAPI Dependency Functions --- 
 # These functions simply call the singleton instance getters
 
@@ -162,6 +172,11 @@ def get_pipeline_executor() -> PipelineExecutor:
 
 def get_completion_service() -> CompletionService:
     return get_completion_service_instance()
+
+
+def get_agent_service() -> AgentService:
+    return get_agent_service_instance()
+
 
 # Note: The get_db dependency still likely resides in core/deps.py or similar
 # as it manages session lifecycle per request, not a singleton service. # <-- This is now incorrect, get_db is imported above

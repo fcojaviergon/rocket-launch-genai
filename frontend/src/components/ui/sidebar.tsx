@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LucideIcon, Home, MessageSquare, Calendar, FileText, BarChart2, Settings, LogOut, Sparkles, MessagesSquare, Users, Zap } from 'lucide-react';
+import { LucideIcon, Home, MessageSquare, Calendar, FileText, BarChart2, Settings, LogOut, Sparkles, MessagesSquare, Users, Zap, Bot } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { signOut, useSession } from 'next-auth/react';
@@ -49,6 +49,7 @@ export function Sidebar() {
       <div className="flex-1 overflow-auto py-2">
         <nav className="grid items-start gap-1">
           <SidebarItem icon={Home} label="Dashboard" href="/dashboard" />
+          <SidebarItem icon={Bot} label="Agent" href="/dashboard/agent" />
           <SidebarItem icon={MessageSquare} label="RAG" href="/dashboard/messages" />
           <SidebarItem icon={Sparkles} label="Completions" href="/dashboard/completions" />
           <SidebarItem icon={MessagesSquare} label="Chat AI" href="/dashboard/chat" />

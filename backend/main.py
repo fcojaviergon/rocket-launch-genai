@@ -1,7 +1,9 @@
 import sys
 import os
+import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # Project imports
 from api.v1.api import api_router
@@ -12,6 +14,7 @@ from core.middleware.logging_middleware import RequestLoggingMiddleware
 from core.middleware.security_middleware import SecurityMiddleware
 from core.exceptions import setup_exception_handlers
 from core.health import comprehensive_health_check, check_database_connection
+from core.serialization import UUIDEncoder
 
 # Import handlers to register them (e.g., event handlers or similar)
 # TODO: Consider making registration more explicit if possible.
@@ -20,10 +23,24 @@ import modules.auth.handlers
 # Configure logging using our enhanced logging configuration
 logger = configure_logging()
 
+# Create our custom JSON response class
+class UUIDJSONResponse(JSONResponse):
+    """Custom JSONResponse that handles UUID serialization."""
+    def render(self, content) -> bytes:
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+            cls=UUIDEncoder,
+        ).encode("utf-8")
+
 app = FastAPI(
     title="Rocket Launch GenAI Platform API",
     description="API for the Rocket Launch GenAI Platform",
-    version="0.1.0"
+    version="0.1.0",
+    default_response_class=UUIDJSONResponse
 )
 
 # Setup global exception handlers
@@ -71,6 +88,8 @@ async def startup_event():
 
         await init_db()
         logger.info("Database initialized correctly")
+        
+ 
     except Exception as e:
         logger.error(f"Error initializing database: {e}", exc_info=True)
 
