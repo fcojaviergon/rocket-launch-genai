@@ -88,7 +88,6 @@ backend/
 │   ├── events/                  # Event system
 │   └── security.py              # Security functions
 ├── database/                    # Data access layer
-│   ├── crud/                    # CRUD operations
 │   ├── models/                  # ORM models
 │   │   ├── base.py              # Base model class
 │   │   ├── conversation.py      # Conversation model
