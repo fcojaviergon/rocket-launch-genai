@@ -12,9 +12,9 @@ from core.anthropic_client import AnthropicClient # Import even if skeleton
 from services.ai.chat_service import ChatService
 from services.ai.completion_service import CompletionService
 from modules.document.service import DocumentService
-from modules.pipeline.service import PipelineService
 from modules.auth.service import AuthService
-from modules.pipeline.executor import PipelineExecutor
+from modules.task.service import TaskService
+from modules.task.manager import TaskManager
 
 # Import Settings
 from core.config import settings
@@ -94,14 +94,6 @@ def get_chat_service_instance() -> ChatService:
     logger.info("ChatService singleton initialized.")
     return instance
 
-@lru_cache(maxsize=None)
-def get_pipeline_service_instance() -> PipelineService:
-    """Creates and returns a singleton PipelineService instance."""
-    logger.info("Initializing singleton PipelineService instance...")
-    # PipelineService currently doesn't have complex dependencies in __init__
-    instance = PipelineService()
-    logger.info("PipelineService singleton initialized.")
-    return instance
 
 @lru_cache(maxsize=None)
 def get_auth_service_instance() -> AuthService:
@@ -112,15 +104,6 @@ def get_auth_service_instance() -> AuthService:
     logger.info("AuthService singleton initialized.")
     return instance
 
-@lru_cache(maxsize=None)
-def get_pipeline_executor_instance() -> PipelineExecutor:
-    """Creates and returns a singleton PipelineExecutor instance."""
-    logger.info("Initializing singleton PipelineExecutor instance...")
-    # PipelineExecutor needs the LLM client
-    llm_client = get_llm_client_instance()
-    instance = PipelineExecutor(llm_client=llm_client)
-    logger.info("PipelineExecutor singleton initialized.")
-    return instance
 
 @lru_cache(maxsize=None)
 def get_completion_service_instance() -> CompletionService:
@@ -139,6 +122,21 @@ def get_completion_service_instance() -> CompletionService:
     logger.info("CompletionService singleton initialized.")
     return instance
 
+@lru_cache()
+def get_task_service() -> TaskService:
+    """
+    Returns a singleton TaskService instance
+    """
+    return TaskService()
+
+@lru_cache()
+def get_task_manager() -> TaskManager:
+    """
+    Returns a singleton TaskManager instance
+    """
+    task_service = get_task_service()
+    return TaskManager(task_service=task_service)
+
 # --- FastAPI Dependency Functions --- 
 # These functions simply call the singleton instance getters
 
@@ -151,14 +149,8 @@ def get_document_service() -> DocumentService:
 def get_chat_service() -> ChatService:
     return get_chat_service_instance()
 
-def get_pipeline_service() -> PipelineService:
-    return get_pipeline_service_instance()
-
 def get_auth_service() -> AuthService:
     return get_auth_service_instance()
-
-def get_pipeline_executor() -> PipelineExecutor:
-    return get_pipeline_executor_instance()
 
 def get_completion_service() -> CompletionService:
     return get_completion_service_instance()
@@ -275,4 +267,4 @@ async def get_current_admin_user(
     return current_user
 
 # Note: The get_db dependency still likely resides in core/deps.py or similar
-# as it manages session lifecycle per request, not a singleton service. 
+# as it manages session lifecycle per request, not a singleton service.

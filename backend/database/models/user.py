@@ -8,7 +8,8 @@ from typing import List, Optional, TYPE_CHECKING # Import TYPE_CHECKING
 if TYPE_CHECKING:
     from database.models.document import Document
     from database.models.conversation import Conversation
-    from database.models.pipeline import Pipeline, PipelineExecution
+    from database.models.analysis import AnalysisScenario
+    from database.models.task import Task
 
 class User(BaseModel):
     """Model for user"""
@@ -26,5 +27,5 @@ class User(BaseModel):
     # With annotations import, quotes are usually not needed unless types are truly undefined
     documents: Mapped[List[Document]] = relationship(back_populates="user", cascade="all, delete-orphan")
     conversations: Mapped[List[Conversation]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    pipelines: Mapped[List[Pipeline]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    pipeline_executions: Mapped[List[PipelineExecution]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    analysis_scenarios: Mapped[List[AnalysisScenario]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    tasks: Mapped[List[Task]] = relationship(back_populates="user")

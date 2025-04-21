@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from api.v1 import completions, auth, chat, users, documents, pipelines, stats
+from api.v1 import completions, auth, chat, users, documents, stats, tasks, analysis
 
 api_router = APIRouter()
 
@@ -35,13 +35,19 @@ api_router.include_router(
 )
 
 api_router.include_router(
-    pipelines.router,
-    prefix="/pipelines",
-    tags=["pipelines"]
+    analysis.router,
+    prefix="/analysis",
+    tags=["analysis"]
 )
 
 api_router.include_router(
     stats.router,
     prefix="/stats",
     tags=["stats"]
+)
+
+api_router.include_router(
+    tasks.router,
+    prefix="/tasks",
+    tags=["tasks"]
 )

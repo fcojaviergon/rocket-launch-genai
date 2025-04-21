@@ -11,7 +11,7 @@ from core.logging_config import configure_logging
 from core.middleware.logging_middleware import RequestLoggingMiddleware
 from core.middleware.security_middleware import SecurityMiddleware
 from core.exceptions import setup_exception_handlers
-from core.health import comprehensive_health_check, check_database_connection
+from core.health import check_database_connection, comprehensive_health_check
 
 # Import handlers to register them (e.g., event handlers or similar)
 # TODO: Consider making registration more explicit if possible.

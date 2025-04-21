@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     # Default models (can be overridden)
     DEFAULT_CHAT_MODEL: str = os.environ.get("DEFAULT_CHAT_MODEL", "gpt-4")
     DEFAULT_EMBEDDING_MODEL: str = os.environ.get("DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small")
+    DEFAULT_CHUNK_SIZE: int = int(os.environ.get("DEFAULT_CHUNK_SIZE", 1000))
+    DEFAULT_CHUNK_OVERLAP: int = int(os.environ.get("DEFAULT_CHUNK_OVERLAP", 200))
     
     # Document storage
     # Calculate path relative to the project root for local development default

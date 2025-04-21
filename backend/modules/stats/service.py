@@ -7,7 +7,6 @@ from sqlalchemy import func, select, and_, text
 
 from database.models.user import User
 from database.models.document import Document
-from database.models.pipeline import PipelineExecution
 
 logger = logging.getLogger(__name__)
 
@@ -51,21 +50,16 @@ class StatsService:
             new_docs_week_fut = db.scalar(select(func.count()).select_from(Document).where(Document.created_at >= week_ago))
             prev_week_docs_fut = db.scalar(select(func.count()).select_from(Document).where(and_(Document.created_at >= two_weeks_ago, Document.created_at < week_ago)))
 
-            total_executions_fut = db.scalar(select(func.count()).select_from(PipelineExecution))
-            new_executions_week_fut = db.scalar(select(func.count()).select_from(PipelineExecution).where(PipelineExecution.created_at >= week_ago))
-            prev_week_executions_fut = db.scalar(select(func.count()).select_from(PipelineExecution).where(and_(PipelineExecution.created_at >= two_weeks_ago, PipelineExecution.created_at < week_ago)))
-
             # --- Recent Activity ---
             recent_activity_query = (
                 select(
-                    PipelineExecution.id,
-                    PipelineExecution.status,
-                    PipelineExecution.created_at,
+                    Document.id,
+                    Document.status,
+                    Document.created_at,
                     Document.title.label('document_name'),
                     Document.type.label('document_type')
                 )
-                .join(Document, PipelineExecution.document_id == Document.id)
-                .order_by(PipelineExecution.created_at.desc())
+                    .order_by(Document.created_at.desc())
                 .limit(5)
             )
             recent_activity_result_fut = db.execute(recent_activity_query)
@@ -164,7 +158,6 @@ class StatsService:
 
             users_data_fut = fetch_monthly_counts(User, User.created_at)
             docs_data_fut = fetch_monthly_counts(Document, Document.created_at)
-            executions_data_fut = fetch_monthly_counts(PipelineExecution, PipelineExecution.created_at)
 
             # --- Document Type Distribution ---
             doc_types_query = (
@@ -181,13 +174,11 @@ class StatsService:
             # Use DB-specific functions for day of week if possible (e.g., EXTRACT(isodow FROM ...) for postgres)
             # This example uses Python processing after fetching daily counts
             seven_days_ago = datetime.utcnow().date() - timedelta(days=6) # Include today
-            day_trunc = func.date(PipelineExecution.created_at.op('at time zone')('utc')).label('day') # Define labeled expression
             daily_executions_query = (\
                 select(\
                      day_trunc, # Use labeled expression\
                      func.count().label('count')\
                 )\
-                .where(PipelineExecution.created_at >= seven_days_ago)\
                 .group_by(day_trunc) # Group by the same labeled expression\
                 .order_by('day') # Order by the label\
             ) # Added closing parenthesis
@@ -196,10 +187,10 @@ class StatsService:
 
             # --- Await Futures ---
             (
-                users_data, docs_data, executions_data,
+                users_data, docs_data,
                 doc_types_result, daily_executions_result
             ) = await asyncio.gather(
-                 users_data_fut, docs_data_fut, executions_data_fut,
+                 users_data_fut, docs_data_fut,
                  doc_types_result_fut, daily_executions_result_fut
             )
 

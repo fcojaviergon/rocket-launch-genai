@@ -1,0 +1,3 @@
+"""
+RFP analysis pipeline module
+"""

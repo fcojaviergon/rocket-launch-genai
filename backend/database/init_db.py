@@ -1,12 +1,12 @@
 import asyncio
 import logging
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.session import async_engine as engine, AsyncSessionLocal as SessionLocal
 # Import all models to ensure SQLAlchemy registers them
-from database.models import BaseModel, User, Document, DocumentEmbedding, DocumentProcessingResult, Conversation, Message, Pipeline
-from modules.auth.service import AuthService
+from database.models import BaseModel, User
+from core.dependencies import AuthService
 # Import settings
 from core.config import settings
 
@@ -63,47 +63,6 @@ async def create_admin_user(db: AsyncSession) -> User:
     logger.info("Admin user created successfully")
     return admin_user
 
-async def create_default_pipeline_config(db: AsyncSession, admin_user: User) -> None:
-    """Create a default pipeline configuration"""
-    # Check if configuration already exists
-    query = select(Pipeline).where(Pipeline.name == "Basic Processing")
-    result = await db.execute(query)
-    default_pipeline = result.scalars().first()
-    
-    if default_pipeline:
-        logger.info("Default pipeline already exists")
-        return
-    
-    # Create default pipeline
-    default_pipeline = Pipeline(
-        name="Basic Processing",
-        description="Basic pipeline for document processing",
-        type="document",
-        steps=[
-            {
-                "name": "text_extraction",
-                "config": {"format": "plain"}
-            },
-            {
-                "name": "summarizer", 
-                "config": {"max_tokens": 200}
-            },
-            {
-                "name": "keyword_extraction",
-                "config": {"max_keywords": 10}
-            }
-        ],
-        config_metadata={
-            "icon": "document",
-            "color": "blue"
-        },
-        user_id=admin_user.id
-    )
-    
-    db.add(default_pipeline)
-    await db.commit()
-    logger.info("Default pipeline created successfully")
-
 async def init_db():
     """Initialize the database with tables and default data"""
     logger.info("Starting database initialization...")
@@ -115,10 +74,7 @@ async def init_db():
     # Create a session
     async with SessionLocal() as db:
         # Create admin user
-        admin_user = await create_admin_user(db)
-        
-        # Create default pipeline
-        await create_default_pipeline_config(db, admin_user)
+        await create_admin_user(db)
     
     logger.info("Database initialization completed")
 

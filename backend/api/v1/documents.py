@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from fileinput import filename
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status, Body, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +17,6 @@ from database.session import get_db
 # Import necessary models and schemas
 from database.models.document import Document
 from database.models.user import User
-from database.models.pipeline import PipelineExecution
 from schemas.document import (
     DocumentCreate,
     DocumentResponse,
@@ -25,12 +25,13 @@ from schemas.document import (
     SearchRequest,    # Import new schema
 )
 # Import dependency functions from their correct locations
-from core.dependencies import get_current_user, get_document_service
+from core.dependencies import get_current_user, get_document_service, get_task_manager
 from database.session import get_db
 from modules.document.service import DocumentService
 import logging
 import os # Ensure os is imported if not already at top level
 import aiofiles # Import aiofiles for async file reading
+from database.models.task import TaskType, TaskPriority, TaskStatus
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -52,10 +53,8 @@ async def upload_document(
         logger.info(f"Receiving file: {file.filename}, Size: {file.size} bytes")
         content = await file.read()
         logger.info(f"Content read: {len(content)} bytes, content type: {file.content_type}")
-
-        # If no name is provided, use the filename
-        if not name:
-            name = file.filename
+        
+        name = f"{file.filename}"
 
         logger.info(f"Document name: {name}")
         document_data = DocumentCreate(
@@ -486,7 +485,8 @@ async def process_document_embeddings(
     chunk_overlap: int = Query(200, ge=0, le=1000, description="Superposición de chunks"),
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    doc_service: DocumentService = Depends(get_document_service)
+    doc_service: DocumentService = Depends(get_document_service),
+    task_manager = Depends(get_task_manager)
 ):
     """
     Schedules background processing (via Celery) for an existing document: 
@@ -516,34 +516,72 @@ async def process_document_embeddings(
         await db.refresh(document) # Refresh to reflect the change if needed later
         logger.info(f"Set document {document_id} status to PENDING")
 
-        # 3. Dispatch the processing task to Celery
-        logger.info(f"Dispatching embedding processing task to Celery for doc {document_id}.")
+        # 3. Crear registro de tarea en la base de datos
+        logger.info(f"Registering document processing task for document {document_id}")
+        task = await task_manager.create_task(
+            db=db,
+            task_name="process_document_embeddings",
+            task_type=TaskType.DOCUMENT_PROCESSING,
+            parameters={
+                "model": model,
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap
+            },
+            source_type="document",
+            source_id=document_id,
+            priority=TaskPriority.NORMAL,
+            user=current_user
+        )
+        
+        # 4. Dispatch the processing task to Celery
+        logger.info(f"Dispatching embedding processing task to Celery for doc {document_id}")
         try:
-            # Import the Celery task
-            from tasks.tasks import process_document_embeddings_task
+            # Import the correct Celery task from document_tasks
+            from tasks.document_tasks import process_document_embeddings_task
             
-            # Send task to Celery queue
-            process_document_embeddings_task.delay(
+            # Send task to Celery queue with the task ID from DB
+            celery_task = process_document_embeddings_task.delay(
                 document_id_str=str(document_id),
                 user_id_str=str(current_user.id),
                 model=model, 
                 chunk_size=chunk_size, 
-                chunk_overlap=chunk_overlap
+                chunk_overlap=chunk_overlap,
+                task_id=str(task.id)
             )
-            logger.info(f"Task for doc {document_id} successfully sent to Celery queue.")
+            
+            # Log the celery task ID
+            logger.info(f"Document processing task launched with Celery ID {celery_task.id} for task DB ID {task.id}")
+            
+            # Update the task record with the Celery task ID
+            await task_manager.update_task(
+                db=db,
+                task_id=task.id,
+                celery_task_id=celery_task.id
+            )
+            
         except Exception as e:
             logger.error(f"Failed to dispatch embedding task to Celery for doc {document_id}: {e}", exc_info=True)
+            
+            # Update the task status to FAILED
+            await task_manager.update_task(
+                db=db,
+                task_id=task.id,
+                status=TaskStatus.FAILED,
+                error_message=f"Failed to dispatch task to Celery: {str(e)}"
+            )
+            
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to schedule document processing task."
             )
 
-        # 4. Return 202 Accepted
+        # 5. Return 202 Accepted
         return JSONResponse(
             {
                 "status": "accepted",
                 "message": f"Embedding processing task for document {document_id} has been scheduled.",
                 "document_id": str(document_id),
+                "task_id": str(task.id),
                 "model": model,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap
@@ -558,7 +596,6 @@ async def process_document_embeddings(
         logger.error(f"Unexpected error in /process-embeddings/{document_id}: {str(e)}\n{error_detail}")
         raise HTTPException(status_code=500, detail=f"Internal error processing embeddings: {str(e)}")
 
-# --- NEW Endpoint for Reprocessing Embeddings ---
 @router.post("/reprocess-embeddings/{document_id}", status_code=status.HTTP_202_ACCEPTED)
 async def reprocess_document_embeddings(
     document_id: UUID,
@@ -568,11 +605,12 @@ async def reprocess_document_embeddings(
     chunk_overlap: int = Query(200, ge=0, le=1000, description="Superposición de chunks para reprocesar"),
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    doc_service: DocumentService = Depends(get_document_service) # Assuming doc_service is needed
+    doc_service: DocumentService = Depends(get_document_service),
+    task_manager = Depends(get_task_manager)
 ):
     """
-    Schedules reprocessing of embeddings for an existing document.
-    Allows reprocessing for documents that are COMPLETED or FAILED.
+    Reprocess a document's embeddings by clearing existing ones and regenerating them.
+    Allows updating parameters like model, chunk size and overlap.
     """
     try:
         # 1. Get the document
@@ -605,36 +643,73 @@ async def reprocess_document_embeddings(
         await db.refresh(document) # Refresh to reflect the change
         logger.info(f"Set document {document_id} status to PENDING for reprocessing.")
 
-        # 5. Dispatch the processing task to Celery
-        logger.info(f"Dispatching embedding reprocessing task to Celery for doc {document_id}.")
+        # 5. Crear registro de tarea en la base de datos
+        logger.info(f"Registering document reprocessing task for document {document_id}")
+        task = await task_manager.create_task(
+            db=db,
+            task_name="process_document_embeddings",
+            task_type=TaskType.DOCUMENT_PROCESSING,
+            parameters={
+                "model": model,
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+                "is_reprocessing": True
+            },
+            source_type="document",
+            source_id=document_id,
+            priority=TaskPriority.NORMAL,
+            user=current_user
+        )
+
+        # 6. Dispatch the processing task to Celery
+        logger.info(f"Dispatching embedding reprocessing task to Celery for doc {document_id}")
         try:
-            # Import the Celery task
-            from tasks.tasks import process_document_embeddings_task
+            # Import the correct Celery task from document_tasks
+            from tasks.document_tasks import process_document_embeddings_task
             
-            # Send task to Celery queue with potentially new parameters
-            process_document_embeddings_task.delay(
+            # Send task to Celery queue with the task ID from DB
+            celery_task = process_document_embeddings_task.delay(
                 document_id_str=str(document_id),
                 user_id_str=str(current_user.id),
                 model=model, 
                 chunk_size=chunk_size, 
-                chunk_overlap=chunk_overlap
+                chunk_overlap=chunk_overlap,
+                task_id=str(task.id)
             )
-            logger.info(f"Reprocessing task for doc {document_id} successfully sent to Celery queue.")
+            
+            # Log the celery task ID
+            logger.info(f"Document reprocessing task launched with Celery ID {celery_task.id} for task DB ID {task.id}")
+            
+            # Update the task record with the Celery task ID
+            await task_manager.update_task(
+                db=db,
+                task_id=task.id,
+                celery_task_id=celery_task.id
+            )
+            
         except Exception as e:
             logger.error(f"Failed to dispatch embedding reprocessing task to Celery for doc {document_id}: {e}", exc_info=True)
-            # Attempt to revert status back? Or leave as PENDING with an error?
-            # For now, raise HTTPException to indicate failure to dispatch.
+            
+            # Update the task status to FAILED
+            await task_manager.update_task(
+                db=db,
+                task_id=task.id,
+                status=TaskStatus.FAILED,
+                error_message=f"Failed to dispatch reprocessing task to Celery: {str(e)}"
+            )
+            
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to schedule document reprocessing task."
             )
 
-        # 6. Return 202 Accepted
+        # 7. Return 202 Accepted
         return JSONResponse(
             {
                 "status": "accepted",
                 "message": f"Embedding reprocessing task for document {document_id} has been scheduled.",
                 "document_id": str(document_id),
+                "task_id": str(task.id),
                 "model": model,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap

@@ -1,3 +1,4 @@
+from fileinput import filename
 from pydantic import BaseModel, Field, UUID4, HttpUrl, validator, root_validator, computed_field, model_validator
 from uuid import UUID
 from datetime import datetime
@@ -5,8 +6,6 @@ from typing import Optional, Dict, Any, List, Union
 import enum
 import json
 import logging
-# Import the correct PipelineExecutionResponse from pipeline schemas
-from .pipeline import PipelineExecutionResponse
 
 logger = logging.getLogger(__name__)
 
@@ -49,24 +48,11 @@ class SearchRequest(BaseModel):
     min_similarity: float = Field(0.5, ge=0.0, le=1.0, description="Minimum similarity score (0 to 1).")
     document_id: Optional[UUID] = Field(None, description="Optional document ID to filter search within a specific document.")
 
-class DocumentProcessingResultResponse(BaseModel):
-    id: Optional[UUID] = None # Allow None for synthesized results
-    document_id: UUID
-    pipeline_name: str
-    summary: Optional[str] = None
-    keywords: Optional[List[str]] = None
-    token_count: Optional[int] = None
-    process_metadata: Optional[Dict[str, Any]] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
 
 class DocumentResponse(BaseModel):
     id: UUID
     title: str
-    content: str
+    filename: str
     user_id: UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -74,9 +60,6 @@ class DocumentResponse(BaseModel):
     type: Optional[str] = None
 
     # These fields will be populated by the service layer
-    pipeline_executions: Optional[List[PipelineExecutionResponse]] = None
-    processing_results: Optional[List[DocumentProcessingResultResponse]] = None
-
     processing_status: Union[ProcessingStatus, str] = Field(..., description="Status of the embedding process")
 
     class Config:

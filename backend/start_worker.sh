@@ -10,18 +10,18 @@ CELERY_POOL=${CELERY_POOL:-prefork}
 CELERY_LOG_LEVEL=${CELERY_LOG_LEVEL:-info}
 
 # Verificar si Redis está disponible
-echo "Verificando conexión a Redis en $REDIS_HOST:$REDIS_PORT..."
+echo "Checking Redis connection at $REDIS_HOST:$REDIS_PORT..."
 redis-cli -h $REDIS_HOST -p $REDIS_PORT ping > /dev/null 2>&1
 if [ $? -ne 0 ]; then
-    echo "Error: No se puede conectar a Redis en $REDIS_HOST:$REDIS_PORT"
-    echo "Asegúrate de que Redis esté en ejecución y sea accesible."
+    echo "Error: Cannot connect to Redis at $REDIS_HOST:$REDIS_PORT"
+    echo "Ensure Redis is running and accessible."
     exit 1
 fi
-echo "Conexión a Redis OK"
+echo "Connection to Redis OK"
 
-# Exportar variables para que Celery las use
+# Export variables for Celery to use
 export REDIS_URL="redis://$REDIS_HOST:$REDIS_PORT/$REDIS_DB"
-export C_FORCE_ROOT=true  # Permite ejecutar Celery como root (solo para desarrollo)
+export C_FORCE_ROOT=true  # Allow Celery to run as root (only for development)
 
 # Add the parent directory (project root) to PYTHONPATH 
 # This allows imports like 'from backend.core import ...' to work reliably
@@ -29,11 +29,11 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
 export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
-echo "Iniciando worker de Celery con pool $CELERY_POOL y $CELERY_CONCURRENCY workers..."
+echo "Starting Celery worker with pool $CELERY_POOL and $CELERY_CONCURRENCY workers..."
 echo "REDIS_URL: $REDIS_URL"
 echo "PYTHONPATH set to: $PYTHONPATH"
 
-# Iniciar worker de Celery 
+# Start Celery worker
 # Ensure the Celery app is specified correctly relative to the project root
 # Assuming your tasks.worker is in backend/tasks/worker.py
 celery -A backend.tasks.worker worker \

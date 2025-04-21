@@ -9,10 +9,6 @@ from alembic import context
 
 from core.config import settings
 from database.models.base import BaseModel
-from database.models.user import User
-from database.models.document import Document
-from database.models.conversation import Conversation, Message
-from database.models.pipeline import Pipeline, PipelineExecution, ExecutionStatus
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -7,7 +7,6 @@ from typing import Dict, Any
 from core.dependencies import get_current_admin_user, get_db
 from database.models.user import User
 from database.models.document import Document
-from database.models.pipeline import PipelineExecution
 from modules.stats.service import StatsService
 
 import logging
