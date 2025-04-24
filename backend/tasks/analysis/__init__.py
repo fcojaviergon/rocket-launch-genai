@@ -1,6 +1,43 @@
 """
-Analysis tasks module
+Módulo de tareas de análisis
 """
+
 # Importar explícitamente las tareas para que Celery las descubra
-from tasks.analysis.rfp_tasks import process_rfp_document
-from tasks.analysis.proposal_tasks import process_proposal_document
+# Tareas de procesamiento de documentos
+from tasks.analysis.document_processing_tasks import (
+    process_document_content
+)
+
+# Tareas de combinación de documentos
+from tasks.analysis.document_combination_tasks import (
+    combine_document_results
+)
+
+# Tareas de análisis de RFP
+from tasks.analysis.rfp_analysis_tasks import (
+    analyze_rfp_content
+)
+
+# Tareas de flujo de trabajo de RFP
+from tasks.analysis.rfp_workflow_tasks import (
+    process_rfp_documents_async
+)
+
+# Tareas de análisis de propuestas
+from tasks.analysis.proposal_analysis_tasks import (
+    analyze_proposal_content
+)
+
+# Tareas de flujo de trabajo de propuestas
+from tasks.analysis.proposal_workflow_tasks import (
+    process_proposal_documents_async
+)
+
+__all__ = [
+    'process_rfp_documents_async',
+    'process_document_content',
+    'combine_document_results',
+    'analyze_rfp_content',
+    'process_proposal_documents_async',
+    'analyze_proposal_content'
+]

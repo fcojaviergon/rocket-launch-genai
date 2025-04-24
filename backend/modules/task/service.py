@@ -48,7 +48,7 @@ class TaskService:
         """
         # Creamos el diccionario con los datos de la tarea
         task_data = {
-            "task_id": celery_task_id,
+            "celery_id": celery_task_id,
             "name": task_name,
             "task_type": task_type,
             "status": TaskStatus.PENDING,
@@ -143,7 +143,7 @@ class TaskService:
         Returns:
             Updated task or None if not found
         """
-        query = select(Task).where(Task.task_id == celery_task_id)
+        query = select(Task).where(Task.celery_id == celery_task_id)
         result_query = await db.execute(query)
         task = result_query.scalars().first()
         
@@ -210,7 +210,7 @@ class TaskService:
         Returns:
             Task or None if not found
         """
-        query = select(Task).where(Task.task_id == celery_task_id)
+        query = select(Task).where(Task.celery_id == celery_task_id)
         result = await db.execute(query)
         return result.scalars().first()
     
@@ -573,7 +573,7 @@ class TaskService:
         
         # Update Celery task ID if provided
         if celery_task_id:
-            task.task_id = celery_task_id
+            task.celery_id = celery_task_id
         
         # Update status if provided
         if status:

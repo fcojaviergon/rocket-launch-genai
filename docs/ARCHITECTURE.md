@@ -30,8 +30,9 @@ The Rocket Launch GenAI Platform architecture implements an event-driven communi
 ## Communication and Flows
 
 - API Gateway in FastAPI
-- Event bus in Redis
-- Decoupled workers for domain processing (documents, embeddings, AI, etc.)
+- Unified event management system combining internal event bus and Redis-based real-time notifications
+- Decoupled processors for domain processing (documents, embeddings, RFP analysis, proposal analysis, etc.)
+- Asynchronous task processing with Celery
 
 ## System Architecture Diagram
 
@@ -54,7 +55,8 @@ The Rocket Launch GenAI Platform architecture implements an event-driven communi
 
 5.  **Redis (Event Bus)**:
     -   Messaging system for asynchronous communication
-    -   Implements the event bus pattern
+    -   Implements the unified event management system
+    -   Supports both internal event bus and real-time notifications
     -   Facilitates decoupling between components
 
 6.  **Celery Workers**:
@@ -75,38 +77,45 @@ backend/
 │   └── versions/                # Migration versions
 ├── api/                         # API endpoint definitions
 │   └── v1/                      # API version 1
+│       ├── analysis.py          # Analysis endpoints
 │       ├── api.py               # Main API router
 │       ├── auth.py              # Authentication endpoints
 │       ├── chat.py              # Chat endpoints
 │       ├── completions.py       # Completions endpoints
 │       ├── document.py          # Document endpoints
-│       ├── pipeline_simplified.py # Pipeline endpoints
+│       ├── tasks.py             # Task management endpoints
 │       └── users.py             # User endpoints
 ├── core/                        # Central configuration
 │   ├── config.py                # Application configurations
 │   ├── deps.py                  # Dependencies (injection)
-│   ├── events/                  # Event system
+│   ├── events/                  # Unified event system
+│   │   ├── __init__.py          # Event system exports
+│   │   ├── bus.py               # Legacy event bus (redirects to manager)
+│   │   └── manager.py           # Unified event manager implementation
 │   └── security.py              # Security functions
 ├── database/                    # Data access layer
 │   ├── models/                  # ORM models
+│   │   ├── analysis.py          # Analysis models (scenarios, pipelines)
+│   │   ├── analysis_document.py # Analysis-document relationships
 │   │   ├── base.py              # Base model class
 │   │   ├── conversation.py      # Conversation model
 │   │   ├── document.py          # Document model
-│   │   ├── pipeline.py          # Pipeline model
+│   │   ├── task.py              # Task tracking model
 │   │   └── user.py              # User model
 │   └── session.py               # DB session management
 ├── main.py                      # FastAPI entry point
 ├── test/                        # Test suite
 ├── modules/                     # Business modules
+│   ├── analysis/                # Analysis module
+│   │   ├── processors/          # Analysis processors
+│   │   │   ├── document_processor.py   # Document text extraction
+│   │   │   ├── embedding_processor.py  # Embedding generation
+│   │   │   ├── rfp_processor.py        # RFP analysis
+│   │   │   └── proposal_processor.py   # Proposal analysis
+│   │   └── service.py           # Analysis service
 │   ├── auth/                    # Authentication logic
-│   ├── document/                # Document processing
-│   ├── pipeline/                # Pipeline module
-│   │   ├── config/              # Pipeline configs
-│   │   ├── base.py              # Pipeline base class
-│   │   ├── data_steps.py        # Data processing steps
-│   │   ├── document_steps.py    # Document steps
-│   │   ├── embedding_steps.py   # Embedding steps
-│   │   └── image_steps.py       # Image steps
+│   ├── document/                # Document management
+│   ├── task/                    # Task management
 │   └── rag/                     # Retrieval Augmented Generation
 ├── requirements.txt             # Python dependencies
 ├── run.py                       # Execution script
@@ -123,6 +132,11 @@ backend/
 ├── storage/                     # File storage
 │   └── documents/               # Stored documents
 └── tasks/                       # Asynchronous tasks (Celery)
+    ├── analysis/                # Analysis tasks
+    │   ├── __init__.py          # Analysis tasks exports
+    │   ├── async_rfp_tasks.py   # RFP analysis tasks
+    │   └── async_proposal_tasks.py # Proposal analysis tasks
+    └── worker.py                # Celery worker configuration
 ```
 
 ### Frontend Organization

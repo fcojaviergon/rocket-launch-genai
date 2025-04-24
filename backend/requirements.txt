@@ -6,6 +6,8 @@
 #
 aiofiles==23.1.0
     # via -r requirements.in
+aioredis==2.0.1
+    # via -r requirements.in
 alembic==1.15.2
     # via -r requirements.in
 amqp==5.3.1

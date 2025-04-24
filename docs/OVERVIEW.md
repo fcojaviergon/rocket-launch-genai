@@ -18,12 +18,13 @@
 - Messages view: query of processed documents through semantic search
 - Documents view: visualization of uploaded files and their metadata
 
-### Pipeline Design
+### Analysis System
 
-- Creation of visual flows with draggable nodes (future UI)
-- Modular configuration of steps: input, processing, output
-- Possibility of manual or automatic execution when uploading documents
-- In the future: pre-configured pipeline templates by document type
+- Scenario-based analysis with multiple pipelines
+- Modular processors for document extraction, embedding generation, and analysis
+- Specialized processors for RFP and proposal analysis
+- Unified event management for real-time notifications and internal communication
+- Asynchronous task processing with progress tracking
 
 ### Control Panel and Analytics
 
@@ -44,12 +45,14 @@
 
 ## Priority Use Cases
 
-1. A user uploads a document and processes it with a pipeline
-2. A user queries documents through messages with AI
-3. A user generates responses with an LLM model from completions
-4. A user interacts with a chatbot with history
-5. An administrator manages users and permissions
-6. A super admin supervises all system activity
+1. A user creates an analysis scenario and adds documents for processing
+2. A user analyzes RFP documents to extract criteria and evaluation frameworks
+3. A user analyzes proposal documents against RFP criteria
+4. A user queries documents through messages with AI
+5. A user generates responses with an LLM model from completions
+6. A user interacts with a chatbot with history
+7. An administrator manages users and permissions
+8. A super admin supervises all system activity
 
 ## Final Considerations
 

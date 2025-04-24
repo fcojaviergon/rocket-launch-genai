@@ -11,7 +11,7 @@ from datetime import datetime
 from sqlalchemy.orm import selectinload
 import aiofiles
 
-from database.models.document import Document
+from database.models.document import Document, ProcessingStatus
 from database.models.analysis import PipelineEmbedding, AnalysisPipeline
 from schemas.document import DocumentCreate, DocumentUpdate, DocumentResponse
 from core.config import settings
@@ -99,7 +99,8 @@ class DocumentService:
             filename=decoded_content,
             file_path=str(file_path),
             type=file_ext.lstrip('.').upper(),  # Save extension without point and in uppercase
-            user_id=user_id
+            user_id=user_id,
+            processing_status="NOT_PROCESSED"  # Usar directamente el valor en mayúsculas
         )
         
         db.add(document)

@@ -107,7 +107,7 @@ async def list_tasks(
             
             task_dict = {
                 "id": str(task.id),
-                "celery_id": task.task_id,
+                "celery_id": task.celery_id,
                 "name": task.name,
                 "type": task.task_type.value,
                 "status": task.status.value,
@@ -132,9 +132,9 @@ async def list_tasks(
             detail=f"Error listing tasks: {str(e)}"
         )
 
-@router.get("/tasks/{task_id}", response_model=dict)
+@router.get("/tasks/{id}", response_model=dict)
 async def get_task(
-    task_id: str = Path(..., description="Task ID"),
+    id: str = Path(..., description="Task ID"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -142,7 +142,7 @@ async def get_task(
     Get a task by ID
     """
     try:
-        task_uuid = uuid.UUID(task_id)
+        task_uuid = uuid.UUID(id)
         task_status = await task_manager.get_task_status(db, task_uuid)
         
         if "error" in task_status:
@@ -156,7 +156,7 @@ async def get_task(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid task ID: {task_id}"
+            detail=f"Invalid task ID: {id}"
         )
     except Exception as e:
         raise HTTPException(
@@ -164,9 +164,9 @@ async def get_task(
             detail=f"Error getting task: {str(e)}"
         )
 
-@router.post("/tasks/{task_id}/cancel", response_model=dict)
+@router.post("/tasks/{id}/cancel", response_model=dict)
 async def cancel_task(
-    task_id: str = Path(..., description="Task ID"),
+    id: str = Path(..., description="Task ID"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -174,21 +174,21 @@ async def cancel_task(
     Cancel a task
     """
     try:
-        task_uuid = uuid.UUID(task_id)
+        task_uuid = uuid.UUID(id)
         task = await task_manager.cancel_task(db, task_uuid)
         
         if not task:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Task {task_id} not found"
+                detail=f"Task {id} not found"
             )
             
-        return {"message": f"Task {task_id} canceled successfully", "status": task.status.value}
+        return {"message": f"Task {id} canceled successfully", "status": task.status.value}
         
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid task ID: {task_id}"
+            detail=f"Invalid task ID: {id}"
         )
     except Exception as e:
         raise HTTPException(
@@ -196,9 +196,9 @@ async def cancel_task(
             detail=f"Error canceling task: {str(e)}"
         )
 
-@router.post("/tasks/{task_id}/retry", response_model=dict)
+@router.post("/tasks/{id}/retry", response_model=dict)
 async def retry_task(
-    task_id: str = Path(..., description="Task ID"),
+    id: str = Path(..., description="Task ID"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -206,21 +206,21 @@ async def retry_task(
     Retry a failed task
     """
     try:
-        task_uuid = uuid.UUID(task_id)
+        task_uuid = uuid.UUID(id)
         task = await task_manager.retry_failed_task(db, task_uuid)
         
         if not task:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Task {task_id} not found or could not be retried"
+                detail=f"Task {id} not found or could not be retried"
             )
             
-        return {"message": f"Task {task_id} scheduled for retry", "status": task.status.value}
+        return {"message": f"Task {id} scheduled for retry", "status": task.status.value}
         
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid task ID: {task_id}"
+            detail=f"Invalid task ID: {id}"
         )
     except Exception as e:
         raise HTTPException(
@@ -228,14 +228,14 @@ async def retry_task(
             detail=f"Error retrying task: {str(e)}"
         )
 
-@router.post("/tasks/{task_id}/priority", response_model=dict)
+@router.post("/tasks/{id}/priority", response_model=dict)
 async def update_task_priority(
     priority: str,
-    task_id: str = Path(..., description="Task ID"),
+    id: str = Path(..., description="Task ID"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
+    """     
     Update a task's priority
     """
     try:
@@ -247,17 +247,17 @@ async def update_task_priority(
                 detail=f"Invalid priority: {priority}. Valid values: {[p.value for p in TaskPriority]}"
             )
             
-        task_uuid = uuid.UUID(task_id)
+        task_uuid = uuid.UUID(id)
         task = await task_manager.update_task_priority(db, task_uuid, priority_enum)
         
         if not task:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Task {task_id} not found"
+                detail=f"Task {id} not found"
             )
             
         return {
-            "message": f"Task {task_id} priority updated to {priority}",
+            "message": f"Task {id} priority updated to {priority}",
             "priority": task.priority.value,
             "status": task.status.value
         }
@@ -265,7 +265,7 @@ async def update_task_priority(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid task ID: {task_id}"
+            detail=f"Invalid task ID: {id}"
         )
     except Exception as e:
         raise HTTPException(

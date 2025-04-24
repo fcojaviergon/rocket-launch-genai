@@ -1,3 +1,0 @@
-"""
-Proposal analysis pipeline module
-"""

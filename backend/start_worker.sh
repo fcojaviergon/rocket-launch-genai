@@ -6,7 +6,7 @@ REDIS_HOST=${REDIS_HOST:-localhost}
 REDIS_PORT=${REDIS_PORT:-6379}
 REDIS_DB=${REDIS_DB:-0}
 CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-4}
-CELERY_POOL=${CELERY_POOL:-prefork}
+CELERY_POOL=${CELERY_POOL:-prefork}  # Cambiado a 'solo' para soportar tareas asíncronas
 CELERY_LOG_LEVEL=${CELERY_LOG_LEVEL:-info}
 
 # Verificar si Redis está disponible

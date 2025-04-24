@@ -3,6 +3,7 @@ from sqlalchemy import Boolean, Column, String, ForeignKey
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from database.models.base import BaseModel
 from typing import List, Optional, TYPE_CHECKING # Import TYPE_CHECKING
+from database.models.token_usage import TokenUsage
 
 # Import related types only for type checking to avoid circular imports
 if TYPE_CHECKING:
@@ -29,3 +30,4 @@ class User(BaseModel):
     conversations: Mapped[List[Conversation]] = relationship(back_populates="user", cascade="all, delete-orphan")
     analysis_scenarios: Mapped[List[AnalysisScenario]] = relationship(back_populates="user", cascade="all, delete-orphan")
     tasks: Mapped[List[Task]] = relationship(back_populates="user")
+    token_usage: Mapped[List[TokenUsage]] = relationship(back_populates="user")

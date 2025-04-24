@@ -73,6 +73,16 @@ def get_llm_client_instance() -> Optional[LLMClientInterface]:
          
     return client
 
+
+async def get_llm_client_instance_async() -> Optional[LLMClientInterface]:
+    """Versión asíncrona que devuelve el mismo cliente LLM singleton.
+    
+    Esta función es necesaria para contextos asíncronos como tareas Celery asíncronas.
+    Simplemente llama a la versión síncrona, ya que la inicialización del cliente es síncrona.
+    """
+    # Usamos la versión síncrona ya que la inicialización es la misma
+    return get_llm_client_instance()
+
 @lru_cache(maxsize=None)
 def get_document_service_instance() -> DocumentService:
     """Creates and returns a singleton DocumentService instance."""

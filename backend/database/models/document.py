@@ -1,5 +1,5 @@
 from __future__ import annotations
-from sqlalchemy import Column, String, ForeignKey, Text, DateTime, ARRAY, JSON, Integer, Enum as SQLEnum
+from sqlalchemy import Column, String, ForeignKey, Text, DateTime, ARRAY, JSON, Integer, Enum
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
 from database.models.base import BaseModel
@@ -15,9 +15,10 @@ if TYPE_CHECKING:
     from database.models.user import User
     from database.models.analysis import AnalysisPipeline
     from database.models.task import Task
+    from database.models.analysis_document import PipelineDocument
 
 # Define Enum for Processing Status
-class ProcessingStatus(enum.Enum):
+class ProcessingStatus(str, enum.Enum):
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
@@ -38,16 +39,11 @@ class Document(BaseModel):
     
     # Relationships
     user: Mapped[User] = relationship(back_populates="documents")
-    analysis_pipelines: Mapped[List[AnalysisPipeline]] = relationship(back_populates="document", cascade="all, delete-orphan")
     tasks: Mapped[List[Task]] = relationship(back_populates="document")
+    document_pipelines: Mapped[List["PipelineDocument"]] = relationship(back_populates="document", cascade="all, delete-orphan")
     # Nota: La relación con document_embeddings ha sido eliminada en favor de pipeline_embeddings
-    processing_status = Column(
-        SQLEnum(ProcessingStatus, name="processing_status_enum", create_type=False), # Use SQLEnum, create_type=False if using Alembic
-        nullable=False,
-        default=ProcessingStatus.NOT_PROCESSED,
-        server_default=ProcessingStatus.NOT_PROCESSED.value,
-        index=True # Add index if frequently queried by status
-    )
+    # Especificar el nombre exacto del enum en la base de datos
+    processing_status: Mapped[ProcessingStatus] = mapped_column(Enum(ProcessingStatus, name="processing_status_enum"), nullable=False, default="NOT_PROCESSED", server_default="NOT_PROCESSED", index=True)
     
     # Add field for storing processing errors
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

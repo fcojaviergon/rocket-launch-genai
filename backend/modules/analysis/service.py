@@ -1,7 +1,7 @@
 """
 Service for managing analysis scenarios and pipelines
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -13,9 +13,9 @@ from database.models.analysis import (
     RfpAnalysisPipeline,
     ProposalAnalysisPipeline,
     PipelineType
-)
+)   
 from database.models.task import Task, TaskType, TaskStatus, TaskPriority
-from modules.pipelines.registry import get_processor_class
+from database.models.analysis_document import PipelineDocument, DocumentRole
 
 class AnalysisService:
     """Service for analysis scenarios and pipelines"""
@@ -118,17 +118,17 @@ class AnalysisService:
         self, 
         db: AsyncSession, 
         scenario_id: uuid.UUID, 
-        document_id: uuid.UUID, 
+        document_ids: List[uuid.UUID], 
         user: User,
         task_manager
     ) -> RfpAnalysisPipeline:
         """
-        Add an RFP analysis pipeline to a scenario
+        Add an RFP analysis pipeline to a scenario with multiple documents
         
         Args:
             db: Database session
             scenario_id: Scenario ID
-            document_id: RFP document ID
+            document_ids: List of RFP document IDs to process
             user: User
             task_manager: Task manager
             
@@ -140,30 +140,57 @@ class AnalysisService:
         if not scenario:
             raise ValueError(f"Scenario {scenario_id} not found or no access")
         
-        # 2. Verify that the document exists
-        result = await db.execute(
-            select(Document).filter(Document.id == document_id)
-        )
-        document = result.scalar_one_or_none()
-        if not document:
-            raise ValueError(f"Document {document_id} not found")
+        # 2. Verify that all documents exist
+        if not document_ids:
+            raise ValueError("At least one document must be provided")
+            
+        documents = []
+        for doc_id in document_ids:
+            result = await db.execute(
+                select(Document).filter(Document.id == doc_id)
+            )
+            document = result.scalar_one_or_none()
+            if not document:
+                raise ValueError(f"Document {doc_id} not found")
+            documents.append(document)
         
-        # Create RFP analysis pipeline directly
+        # Use first document as principal document
+        principal_document = documents[0]
+        
+        # 4. Create RFP analysis pipeline
         pipeline_id = uuid.uuid4()
         pipeline = RfpAnalysisPipeline(
             id=pipeline_id,
             scenario_id=scenario.id,
-            document_id=document.id,
+            principal_document_id=principal_document.id,
             pipeline_type=PipelineType.RFP_ANALYSIS
         )
         db.add(pipeline)
         await db.commit()
         await db.refresh(pipeline)
         
-        # 5. Create task in the task system
-        task_name = f"RFP Analysis of {document.title} for scenario {scenario.name}"
+        # 5. Associate documents with pipeline using the many-to-many relationship
+        from database.models.analysis_document import PipelineDocument, DocumentRole
+        
+        # Associate each document with the pipeline
+        for idx, document in enumerate(documents):
+            # First document is primary, rest are secondary
+            doc_role = DocumentRole.PRIMARY if idx == 0 else DocumentRole.SECONDARY
+            
+            pipeline_document = PipelineDocument(
+                pipeline_id=pipeline.id,
+                document_id=document.id,
+                role=doc_role,
+                processing_order=idx  # Order by index
+            )
+            db.add(pipeline_document)
+        
+        await db.commit()
+        
+        # 6. Create task in the task system
+        task_name = f"RFP Analysis of {principal_document.title} for scenario {scenario.name}"
         parameters = {
-            "document_id": str(document.id),
+            "document_ids": [str(doc.id) for doc in documents],
             "pipeline_id": str(pipeline.id)
         }
         task = await task_manager.create_task(
@@ -177,10 +204,10 @@ class AnalysisService:
             user=user
         )
         
-        # 6. Launch Celery task
-        from tasks.analysis.rfp_tasks import process_rfp_document
-        celery_task = process_rfp_document.delay(
-            document_id=str(document.id),
+        # 6. Launch Celery task (versión asíncrona)
+        from tasks.analysis.rfp_workflow_tasks import process_rfp_documents_async
+        celery_task = process_rfp_documents_async.delay(
+            document_ids=[str(doc.id) for doc in documents],
             pipeline_id=str(pipeline.id),
             user_id=str(user.id),
             task_id=str(task.id)
@@ -199,18 +226,18 @@ class AnalysisService:
         self, 
         db: AsyncSession, 
         scenario_id: uuid.UUID, 
-        document_id: uuid.UUID,
+        document_ids: List[uuid.UUID],
         rfp_pipeline_id: uuid.UUID,
         user: User,
         task_manager
     ) -> ProposalAnalysisPipeline:
         """
-        Add a proposal analysis pipeline to a scenario
+        Add a proposal analysis pipeline to a scenario with multiple documents
         
         Args:
             db: Database session
             scenario_id: Scenario ID
-            document_id: Proposal document ID
+            documents: List of proposal documents to process
             rfp_pipeline_id: ID of the related RFP pipeline
             user: User
             task_manager: Task manager
@@ -223,13 +250,19 @@ class AnalysisService:
         if not scenario:
             raise ValueError(f"Scenario {scenario_id} not found or no access")
         
-        # 2. Verify that the document exists
-        result = await db.execute(
-            select(Document).filter(Document.id == document_id)
-        )
-        document = result.scalar_one_or_none()
-        if not document:
-            raise ValueError(f"Document {document_id} not found")
+        # 2. Verify that all documents exist
+        if not document_ids:
+            raise ValueError("At least one document must be provided")
+            
+        documents = []
+        for doc_id in document_ids:
+            result = await db.execute(
+                select(Document).filter(Document.id == doc_id)
+            )
+            document = result.scalar_one_or_none()
+            if not document:
+                raise ValueError(f"Document {doc_id} not found")
+            documents.append(document)
         
         # 3. Verify that the RFP pipeline exists
         result = await db.execute(
@@ -243,30 +276,51 @@ class AnalysisService:
         if rfp_pipeline.scenario_id != scenario.id:
             raise ValueError(f"The RFP pipeline does not belong to scenario {scenario.name}")
         
-        # Create proposal analysis pipeline directly
-        pipeline_id = uuid.uuid4()
-        pipeline = ProposalAnalysisPipeline(
-            id=pipeline_id,
-            scenario_id=scenario.id,
-            document_id=document.id,
-            pipeline_type=PipelineType.PROPOSAL_ANALYSIS,
-            parent_pipeline_id=rfp_pipeline.id
-        )
-        db.add(pipeline)
-        await db.commit()
-        await db.refresh(pipeline)
+        # 4. Create the pipeline
+        # El primer documento de la lista se considera el principal
+        principal_document = documents[0] if documents else None
+        if not principal_document:
+            raise ValueError("No se pudo determinar el documento principal")
         
-        # 7. Create task in the task system
-        task_name = f"Proposal Analysis of {document.title} for scenario {scenario.name}"
+        pipeline = ProposalAnalysisPipeline(
+            scenario_id=scenario_id,
+            pipeline_type=PipelineType.PROPOSAL_ANALYSIS,
+            referenced_rfp_id=rfp_pipeline.id,
+            principal_document_id=principal_document.id  # Establecer el documento principal
+        )
+        
+        db.add(pipeline)
+        await db.flush()
+        
+        # 5. Associate all documents with the pipeline
+        for i, document in enumerate(documents):
+            # First document is primary, rest are secondary
+            role = DocumentRole.PRIMARY if i == 0 else DocumentRole.SECONDARY
+            
+            pipeline_document = PipelineDocument(
+                pipeline_id=pipeline.id,
+                document_id=document.id,
+                role=role,
+                processing_order=i + 1  # Order based on position in list
+            )
+            
+            db.add(pipeline_document)
+        
+        await db.flush()
+        await db.refresh(pipeline_document)
+        
+        # 6. Create task in the task system
+        primary_doc = documents[0]  # First document is considered primary for task naming
+        task_name = f"Proposal Analysis of {primary_doc.title} and {len(documents)-1} additional documents"
         parameters = {
-            "document_id": str(document.id),
+            "document_ids": [str(doc.id) for doc in documents],
             "pipeline_id": str(pipeline.id),
-            "rfp_pipeline_id": str(rfp_pipeline.id)
+            "rfp_pipeline_id": str(rfp_pipeline_id)
         }
         task = await task_manager.create_task(
             db=db,
             task_name=task_name,
-            task_type=TaskType.PROPOSAL_ANALYSIS, 
+            task_type=TaskType.PROPOSAL_ANALYSIS,
             parameters=parameters,
             source_type="analysis_pipeline",
             source_id=pipeline.id,
@@ -274,17 +328,17 @@ class AnalysisService:
             user=user
         )
         
-        # 8. Launch Celery task
-        from tasks.analysis.proposal_tasks import process_proposal_document
-        celery_task = process_proposal_document.delay(
-            document_id=str(document.id),
+        # 7. Launch Celery task (versión asíncrona)
+        from tasks.analysis.proposal_workflow_tasks import process_proposal_documents_async
+        celery_task = process_proposal_documents_async.delay(
+            document_ids=[str(doc.id) for doc in documents],
             pipeline_id=str(pipeline.id),
-            rfp_pipeline_id=str(rfp_pipeline.id),
+            rfp_pipeline_id=str(rfp_pipeline_id),
             user_id=str(user.id),
             task_id=str(task.id)
         )
         
-        # 9. Update task with Celery ID
+        # 8. Update task with Celery ID
         await task_manager.update_task_celery_id(
             db=db,
             task_id=task.id,
@@ -292,6 +346,156 @@ class AnalysisService:
         )
         
         return pipeline
+    
+    async def reprocess_pipeline(
+        self,
+        db: AsyncSession,
+        pipeline_id: uuid.UUID,
+        user: User,
+        task_manager
+    ) -> AnalysisPipeline:
+        """
+        Reprocess an existing pipeline
+        
+        Args:
+            db: Database session
+            pipeline_id: Pipeline ID
+            user: User
+            task_manager: Task manager
+            
+        Returns:
+            AnalysisPipeline: Updated pipeline
+        """
+        # 1. Verify that the pipeline exists
+        result = await db.execute(
+            select(AnalysisPipeline).filter(AnalysisPipeline.id == pipeline_id)
+        )
+        pipeline = result.scalar_one_or_none()
+        if not pipeline:
+            raise ValueError(f"Pipeline {pipeline_id} not found")
+            
+        # 2. Reset pipeline status
+        pipeline.status = "pending"
+        pipeline.completed_at = None
+        
+        # 3. Get principal document for task name
+        result = await db.execute(
+            select(Document).filter(Document.id == pipeline.principal_document_id)
+        )
+        document = result.scalar_one_or_none()
+        
+        if not document:
+            raise ValueError(f"Principal document not found for pipeline {pipeline_id}")
+            
+        # 4. Create task based on pipeline type
+        if pipeline.pipeline_type == PipelineType.RFP_ANALYSIS:
+            # 5. Create task for RFP analysis
+            primary_doc = document  # First document is considered primary for task naming
+            task_name = f"RFP Analysis of {primary_doc.title} (reprocessing)"
+            parameters = {
+                "document_ids": [str(doc.id) for doc in [document]],
+                "pipeline_id": str(pipeline.id)
+            }
+            task = await task_manager.create_task(
+                db=db,
+                task_name=task_name,
+                task_type=TaskType.RFP_ANALYSIS,
+                parameters=parameters,
+                source_type="analysis_pipeline",
+                source_id=pipeline.id,
+                priority=TaskPriority.NORMAL,
+                user=user
+            )
+            
+            # Launch Celery task (versión asíncrona)
+            from tasks.analysis.rfp_workflow_tasks import process_rfp_documents_async
+            celery_task = process_rfp_documents_async.delay(
+                document_ids=[str(doc.id) for doc in [document]],
+                pipeline_id=str(pipeline.id),
+                user_id=str(user.id),
+                task_id=str(task.id)
+            )
+            
+        elif pipeline.pipeline_type == PipelineType.PROPOSAL_ANALYSIS:
+            # Get RFP pipeline
+            rfp_pipeline_id = pipeline.parent_pipeline_id
+            if not rfp_pipeline_id:
+                raise ValueError("Proposal pipeline has no associated RFP pipeline")
+                
+            # 6. Create task for proposal analysis
+            primary_doc = document  # First document is considered primary for task naming
+            task_name = f"Proposal Analysis of {primary_doc.title} (reprocessing)"
+            parameters = {
+                "document_ids": [str(doc.id) for doc in [document]],
+                "pipeline_id": str(pipeline.id),
+                "rfp_pipeline_id": str(rfp_pipeline_id)
+            }
+            task = await task_manager.create_task(
+                db=db,
+                task_name=task_name,
+                task_type=TaskType.PROPOSAL_ANALYSIS,
+                parameters=parameters,
+                source_type="analysis_pipeline",
+                source_id=pipeline.id,
+                priority=TaskPriority.NORMAL,
+                user=user
+            )
+            
+            # Launch Celery task (versión asíncrona)
+            from tasks.analysis.proposal_workflow_tasks import process_proposal_documents_async
+            celery_task = process_proposal_documents_async.delay(
+                document_ids=[str(doc.id) for doc in [document]],
+                pipeline_id=str(pipeline.id),
+                rfp_pipeline_id=str(rfp_pipeline_id),
+                user_id=str(user.id),
+                task_id=str(task.id)
+            )
+        else:
+            raise ValueError(f"Unsupported pipeline type: {pipeline.pipeline_type}")
+            
+        # Update task with Celery ID
+        await task_manager.update_task_celery_id(
+            db=db,
+            task_id=task.id,
+            celery_task_id=celery_task.id
+        )
+        
+        await db.commit()
+        await db.refresh(pipeline)
+        return pipeline
+        
+    async def delete_pipeline(
+        self,
+        db: AsyncSession,
+        pipeline_id: uuid.UUID,
+        user: User
+    ) -> bool:
+        """
+        Delete a pipeline and its associated data
+        
+        Args:
+            db: Database session
+            pipeline_id: Pipeline ID
+            user: User
+            
+        Returns:
+            bool: True if deleted successfully
+        """
+        # 1. Verify that the pipeline exists
+        result = await db.execute(
+            select(AnalysisPipeline).filter(AnalysisPipeline.id == pipeline_id)
+        )
+        pipeline = result.scalar_one_or_none()
+        if not pipeline:
+            raise ValueError(f"Pipeline {pipeline_id} not found")
+            
+        # Ya no es necesario verificar pipelines hijos, ya que eliminamos la jerarquía padre-hijo
+            
+        # 3. Delete the pipeline (cascade will handle related entities)
+        await db.delete(pipeline)
+        await db.commit()
+        
+        return True
     
     async def get_pipelines(
         self, 

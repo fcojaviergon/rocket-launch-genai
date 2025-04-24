@@ -10,12 +10,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Re-define Enum here for schema usage
-class ProcessingStatus(enum.Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    NOT_PROCESSED = "not_processed"
+class ProcessingStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    NOT_PROCESSED = "NOT_PROCESSED"
 
 class DocumentBase(BaseModel):
     name: str  # Will be used as title (title) in the database

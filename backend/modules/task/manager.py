@@ -316,10 +316,10 @@ class TaskManager:
         # Try to revoke the Celery task
         try:
             from tasks.worker import celery_app
-            celery_app.control.revoke(task.task_id, terminate=True)
-            logger.info(f"Revoked Celery task {task.task_id}")
+            celery_app.control.revoke(task.celery_id, terminate=True)
+            logger.info(f"Revoked Celery task {task.celery_id}")
         except Exception as e:
-            logger.error(f"Error revoking Celery task {task.task_id}: {e}")
+            logger.error(f"Error revoking Celery task {task.celery_id}: {e}")
             
         # Update status in database
         return await self.task_service.update_task_status(
@@ -358,7 +358,7 @@ class TaskManager:
         # Build status response
         status_info = {
             "id": str(task.id),
-            "celery_id": task.task_id,
+            "celery_id": task.celery_id,
             "name": task.name,
             "type": task.task_type.value,
             "status": task.status.value,
@@ -450,7 +450,7 @@ class TaskManager:
                 # Update the task record
                 await self.task_service.update_task_by_celery_id(
                     db=db,
-                    celery_task_id=task.task_id,
+                    celery_task_id=task.celery_id,
                     status=TaskStatus.RUNNING
                 )
                 
@@ -507,7 +507,7 @@ class TaskManager:
             result = task_func.delay(**parameters)
             
             # Update the task record with the new Celery task ID
-            task.task_id = result.id
+            task.celery_id = result.id
             task.status = TaskStatus.RETRYING
             task.retry_count += 1
             task.started_at = None

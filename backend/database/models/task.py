@@ -43,7 +43,7 @@ class Task(BaseModel):
     __tablename__ = "tasks"
     
     # Task identification and metadata
-    task_id: Mapped[str] = mapped_column(String, nullable=False, index=True)  # Celery task ID
+    celery_id: Mapped[str] = mapped_column(String, nullable=False, index=True)  # Celery task ID
     name: Mapped[str] = mapped_column(String, nullable=False)  # Task name (function)
     task_type: Mapped[TaskType] = mapped_column(Enum(TaskType), nullable=False, index=True)
     status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.PENDING, nullable=False, index=True)
