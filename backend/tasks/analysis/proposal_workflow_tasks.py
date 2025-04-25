@@ -8,7 +8,6 @@ from datetime import datetime
 
 from database.session import get_sync_session_context
 from database.models.document import Document, ProcessingStatus
-from database.models.analysis import PipelineEmbedding
 from core.events import get_event_manager
 from tasks.base_tasks import update_task_status_sync
 import logging
@@ -16,8 +15,8 @@ from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
-@shared_task(name="process_proposal_documents_async")
-def process_proposal_documents_async(document_ids: list, pipeline_id: str, rfp_pipeline_id: str, user_id: str, task_id: str) -> Dict[str, Any]:
+@shared_task(name="process_proposal_documents")
+def process_proposal_documents(document_ids: list, pipeline_id: str, rfp_pipeline_id: str, user_id: str, is_retry: bool = False, task_id: str = None) -> Dict[str, Any]:
     """
     Procesar documentos de propuesta de forma asíncrona
     
@@ -31,6 +30,7 @@ def process_proposal_documents_async(document_ids: list, pipeline_id: str, rfp_p
         pipeline_id: ID del pipeline de propuesta
         rfp_pipeline_id: ID del pipeline de RFP referenciado
         user_id: ID del usuario
+        is_retry: Indica si es un reintento de análisis
         task_id: ID de la tarea
         
     Returns:
@@ -44,54 +44,51 @@ def process_proposal_documents_async(document_ids: list, pipeline_id: str, rfp_p
         {
             "pipeline_id": pipeline_id,
             "rfp_pipeline_id": rfp_pipeline_id,
-            "document_count": len(document_ids)
+            "document_count": len(document_ids),
+            "is_retry": is_retry
         }
     )
     
-    # Verificar el estado de procesamiento de los documentos
-    # Inicializar lista para documentos a procesar
-    docs_to_process = []
-    
-    # Usar context manager para sesiones síncronas en Celery
-    with get_sync_session_context() as db:
-        for doc_id in document_ids:
-            # Obtener el documento usando API síncrona
-            document = db.query(Document).filter(Document.id == uuid.UUID(doc_id)).first()
+    # Si es un reintento, limpiar el pipeline para empezar de nuevo
+    if is_retry:
+        with get_sync_session_context() as db:
             
-            if not document:
-                logger.warning(f"Documento {doc_id} no encontrado. Omitiendo.")
-                continue
+            # Convertir pipeline_id a UUID
+            pipeline_id_uuid = uuid.UUID(pipeline_id)
+            
+            # 1. Limpiar embeddings existentes
+            from database.models.analysis import PipelineEmbedding
+            db.query(PipelineEmbedding).filter(
+                PipelineEmbedding.pipeline_id == pipeline_id_uuid
+            ).delete(synchronize_session=False)
+            
+            # 2. Resetear el estado del pipeline
+            from database.models.analysis import ProposalAnalysisPipeline
+            pipeline = db.query(ProposalAnalysisPipeline).filter(
+                ProposalAnalysisPipeline.id == pipeline_id_uuid
+            ).first()
+            
+            from database.models.analysis import PipelineStatus
+            if pipeline:
+                # Limpiar resultados anteriores
+                pipeline.extracted_criteria = None
+                pipeline.evaluation_framework = None
+                pipeline.results = None
+                pipeline.status = PipelineStatus.PROCESSING
+                db.commit()
                 
-            # Verificar si el documento ya fue procesado
-            if document.processing_status == ProcessingStatus.COMPLETED:
-                logger.info(f"Documento {doc_id} ya fue procesado (status=COMPLETED). Omitiendo generación de embeddings.")
-                continue
-                    
-            # Verificar si hay embeddings existentes como respaldo usando API síncrona
-            existing_embeddings = db.query(func.count()).select_from(PipelineEmbedding).filter(
-                PipelineEmbedding.pipeline_id == uuid.UUID(pipeline_id),
-                func.json_extract_path_text(PipelineEmbedding.metadata_info, 'document_id') == str(doc_id)
-            ).scalar()
-                
-            if existing_embeddings > 0:
-                logger.info(f"Se encontraron {existing_embeddings} embeddings existentes para el documento {doc_id}. Omitiendo generación.")
+                logger.info(f"Pipeline {pipeline_id} limpiado para reintento")
             else:
-                # Si no hay embeddings existentes y el documento no está marcado como COMPLETED, procesarlo
-                logger.info(f"Documento {doc_id} requiere procesamiento. Estado actual: {document.processing_status}")
-                docs_to_process.append(doc_id)
-        
-    # Si no hay documentos para procesar, usar los originales (para mantener la compatibilidad)
-    if not docs_to_process:
-        logger.info(f"Todos los documentos ya están procesados. Usando los existentes.")
-        docs_to_process = document_ids
-    
+                logger.error(f"No se encontró el pipeline {pipeline_id} para reintento")
+     
+     
     # Importar las tareas necesarias usando Celery app
     from tasks.worker import celery_app
     
     # Crear grupo de tareas para procesar documentos en paralelo
     document_tasks = group(
         celery_app.signature('process_document_content', args=[doc_id, pipeline_id])
-        for doc_id in docs_to_process
+        for doc_id in document_ids
     )
     
     # Crear cadena de tareas: procesar documentos -> combinar resultados -> analizar

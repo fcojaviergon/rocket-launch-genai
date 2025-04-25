@@ -20,11 +20,12 @@ from tasks.worker import celery_app
 logger = logging.getLogger(__name__)
 
 @celery_app.task(name="analyze_rfp_content")
-def analyze_rfp_content(pipeline_id: str, user_id: str, task_id: str) -> Dict[str, Any]:
+def analyze_rfp_content(previous_result=None, pipeline_id: str = None, user_id: str = None, task_id: str = None) -> Dict[str, Any]:
     """
     Analizar el contenido combinado de RFP para extraer criterios y generar framework de evaluación
     
     Args:
+        previous_result: Resultado de la tarea anterior (combine_document_results)
         pipeline_id: ID del pipeline
         user_id: ID del usuario
         task_id: ID de la tarea
@@ -32,6 +33,36 @@ def analyze_rfp_content(pipeline_id: str, user_id: str, task_id: str) -> Dict[st
     Returns:
         Dict[str, Any]: Resultados del análisis
     """
+    # Simplificación: solo usamos los argumentos posicionales directamente
+    # Esto hace que el código sea más predecible y fácil de depurar
+    
+    # Verificar que tenemos pipeline_id
+    if not pipeline_id:
+        logger.error(f"analyze_rfp_content: No se proporcionó pipeline_id")
+        return {"success": False, "error": "No se proporcionó pipeline_id para analyze_rfp_content"}
+    
+    # Verificar que tenemos user_id (opcional)
+    if not user_id:
+        logger.warning(f"analyze_rfp_content: No se proporcionó user_id, usando anónimo")
+    
+    logger.info(f"analyze_rfp_content llamado con: previous_result={type(previous_result)}, pipeline_id={pipeline_id}, user_id={user_id}, task_id={task_id}")
+    
+    # Manejar el caso cuando se recibe el resultado anterior como primer argumento
+    if pipeline_id is None and isinstance(previous_result, str):
+        # Si el primer argumento es un string y no se proporcionó pipeline_id, asumimos que es el pipeline_id
+        pipeline_id = previous_result
+        previous_result = None
+    elif isinstance(previous_result, dict) and pipeline_id is None:
+        # Si el primer argumento es un diccionario (resultado de combine_document_results)
+        # y no se proporcionó pipeline_id, intentamos extraerlo del resultado
+        pipeline_id = previous_result.get("pipeline_id")
+        
+    # Verificar que tenemos todos los argumentos necesarios
+    if not pipeline_id or not user_id:
+        error_msg = f"Faltan argumentos requeridos: pipeline_id={pipeline_id}, user_id={user_id}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+    
     pipeline_id_uuid = uuid.UUID(pipeline_id)
     user_id_uuid = uuid.UUID(user_id)
     task_id_uuid = uuid.UUID(task_id)
@@ -115,12 +146,21 @@ def analyze_rfp_content(pipeline_id: str, user_id: str, task_id: str) -> Dict[st
             llm_client = get_llm_client_instance()
             rfp_processor = RfpProcessor(llm_client=llm_client)
             
-            # Obtener texto combinado del pipeline
-            combined_text = pipeline.combined_text_content
+            # Obtener texto combinado del resultado anterior o de los embeddings almacenados
+            combined_text = ""
+            
+            if isinstance(previous_result, dict) and "combined_text_content" in previous_result:
+                combined_text = previous_result.get("combined_text_content", "")
+                logger.info(f"Usando texto combinado del resultado anterior: {len(combined_text)} caracteres")
             
             # Verificar que hay texto combinado
             if not combined_text:
-                raise ValueError("No hay contenido de texto combinado para analizar")
+                logger.error("No se pudo obtener texto combinado para analizar")
+                return {
+                    "success": False,
+                    "pipeline_id": pipeline_id,
+                    "error": "No se pudo obtener texto combinado para analizar"
+                }
             
             # Ejecutar el análisis síncrono
             # Pasar el ID del usuario para seguimiento de tokens
@@ -138,25 +178,22 @@ def analyze_rfp_content(pipeline_id: str, user_id: str, task_id: str) -> Dict[st
             # Actualizar pipeline con resultados
             pipeline.extracted_criteria = results.get("extracted_criteria")
             pipeline.evaluation_framework = results.get("evaluation_framework")
-            pipeline.results = results
+            pipeline.results = {
+                "analyzed_at": results.get("analyzed_at"),
+                "token_usage": results.get("token_usage", {})
+            }
+            from database.models.analysis import PipelineStatus
             
-            # Actualizar el pipeline con los resultados
-            pipeline.processing_metadata = pipeline.processing_metadata or {}
-            pipeline.processing_metadata.update({
-                "rfp_analysis": {
-                    "completed_at": datetime.utcnow().isoformat(),
-                    "criteria_count": len(results.get("criteria", [])),
-                    "framework_generated": True
-                }
-            })
+            # Actualizar estado del pipeline a COMPLETED
+            pipeline.status = PipelineStatus.COMPLETED.value
             
-            # Guardar cambios en el pipeline
+            # Guardar cambios
             db.commit()
             
             # Actualizar tarea a completada
             task = db.query(Task).filter(Task.id == task_id_uuid).first()
             if task:
-                task.status = TaskStatus.COMPLETED
+                task.status = TaskStatus.COMPLETED.value
                 task.completed_at = datetime.utcnow().isoformat()
                 
                 # Serializar resultados para evitar problemas de JSON
@@ -193,23 +230,25 @@ def analyze_rfp_content(pipeline_id: str, user_id: str, task_id: str) -> Dict[st
     except Exception as e:
         logger.error(f"Error en analyze_rfp_content: {e}")
         
-        # Actualizar tarea como fallida
-        update_task_error(e)
-        
-        # Publicar evento de error
+        # Marcar el pipeline como fallido
         try:
-            event_manager.publish_realtime(
-                f"pipeline:{pipeline_id}",
-                "rfp_analysis_error",
-                {
-                    "pipeline_id": pipeline_id,
-                    "error": str(e)
-                }
-            )
-        except Exception as event_error:
-            logger.error(f"Error al publicar evento de error: {event_error}")
-
-        # Devolver error en lugar de relanzar excepción
+            with get_sync_session_context() as db:
+                pipeline = db.query(RfpAnalysisPipeline).filter(
+                    RfpAnalysisPipeline.id == uuid.UUID(pipeline_id)
+                ).first()
+                
+                if pipeline:
+                    pipeline.status = PipelineStatus.FAILED.value
+                    db.commit()
+                    logger.info(f"Pipeline {pipeline_id} marcado como FAILED")
+        except Exception as inner_e:
+            logger.error(f"Error al marcar pipeline como fallido: {inner_e}")
+        
+        # Actualizar estado de la tarea si tenemos task_id
+        if task_id:
+            update_task_error(e)
+        
+        # Devolver error
         return {
             "success": False,
             "error": str(e),

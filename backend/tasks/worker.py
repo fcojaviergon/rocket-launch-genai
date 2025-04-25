@@ -77,16 +77,11 @@ def task_started(task_id, task, *args, **kwargs):
         # Import here to avoid circular imports
         from tasks.base_tasks import update_task_status_sync
         
-        # Run the async function in a new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(update_task_status_sync(
-                task_id=task_id,
-                status="RUNNING"
-            ))
-        finally:
-            loop.close()
+        # update_task_status_sync es una función síncrona, no necesita run_until_complete
+        update_task_status_sync(
+            task_id=task_id,
+            status="RUNNING"
+        )
     except Exception as e:
         logger.error(f"Failed to update task status to RUNNING: {e}")
 
@@ -101,17 +96,12 @@ def task_completed(sender=None, result=None, **kwargs):
         # Import here to avoid circular imports
         from tasks.base_tasks import update_task_status_sync
         
-        # Run the async function in a new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(update_task_status_sync(
-                task_id=task_id,
-                status="COMPLETED",
-                result=result
-            ))
-        finally:
-            loop.close()
+        # update_task_status_sync es una función síncrona, no necesita run_until_complete
+        update_task_status_sync(
+            task_id=task_id,
+            status="COMPLETED",
+            result=result
+        )
     except Exception as e:
         logger.error(f"Failed to update task status to COMPLETED: {e}")
 
@@ -126,17 +116,12 @@ def task_failed(sender=None, exception=None, **kwargs):
         # Import here to avoid circular imports
         from tasks.base_tasks import update_task_status_sync
         
-        # Run the async function in a new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(update_task_status_sync(
-                task_id=task_id,
-                status="FAILED",
-                error_message=str(exception)
-            ))
-        finally:
-            loop.close()
+        # update_task_status_sync es una función síncrona, no necesita run_until_complete
+        update_task_status_sync(
+            task_id=task_id,
+            status="FAILED",
+            error_message=str(exception)
+        )
     except Exception as e:
         logger.error(f"Failed to update task status to FAILED: {e}")
 

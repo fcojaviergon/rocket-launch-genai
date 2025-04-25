@@ -24,6 +24,79 @@ class EmbeddingProcessor(Generic[T]):
         self.llm_client = llm_client
         self.default_embedding_model = "text-embedding-3-small"
         
+    def generate_embeddings_sync(
+        self, 
+        text_content: str, 
+        chunk_size: int = 2000, 
+        overlap: int = 200,
+        model: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Generar embeddings para el contenido de texto (versión síncrona para tareas Celery)
+        
+        Args:
+            text_content: Contenido de texto
+            chunk_size: Tamaño de cada chunk
+            overlap: Superposición entre chunks
+            model: Modelo de embedding a usar (opcional)
+            user_id: ID del usuario para seguimiento de tokens (opcional)
+            
+        Returns:
+            Dict[str, Any]: Resultados con embeddings y metadatos
+        """
+        # Verificar que hay contenido
+        if not text_content:
+            logger.warning("No hay contenido de texto para generar embeddings")
+            return {
+                "embeddings": [],
+                "embedding_model": self.default_embedding_model,
+                "chunk_count": 0
+            }
+        
+        # Dividir texto en chunks
+        chunks = self._split_text_into_chunks(text_content, chunk_size, overlap)
+        
+        # Modelo a usar
+        embedding_model = model or self.default_embedding_model
+        
+        # Generar embeddings para cada chunk
+        embeddings = []
+        for chunk in chunks:
+            try:
+                # Generar embedding con el cliente LLM (versión síncrona)
+                embedding_vector = self.llm_client.generate_embeddings_sync(
+                    texts=[chunk],
+                    model=embedding_model,
+                    user_id=user_id
+                )
+                
+                logger.info(f"Embedding generado para chunk (longitud: {len(chunk)})")
+                
+                # Asegurarse de que el vector sea una lista de Python, no un array de NumPy
+                if isinstance(embedding_vector, np.ndarray):
+                    embedding_vector = embedding_vector.tolist()
+                
+                # Añadir a la lista de embeddings
+                embeddings.append({
+                    "chunk_text": chunk,
+                    "embedding_vector": embedding_vector
+                })
+            except Exception as e:
+                logger.error(f"Error al generar embedding: {e}")
+                # Continuar con el siguiente chunk
+        
+        return {
+            "embeddings": embeddings,
+            "embedding_model": embedding_model,
+            "chunk_count": len(chunks),
+            "token_usage": {
+                "input_tokens": len(chunks) * self.llm_client.token_counter.count_tokens(chunks[0], embedding_model) if chunks else 0,
+                "model": embedding_model,
+                "user_id": user_id
+            }
+        }
+        
     async def generate_embeddings(
         self, 
         text_content: str, 

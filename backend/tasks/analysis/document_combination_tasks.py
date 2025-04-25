@@ -16,7 +16,29 @@ from tasks.worker import celery_app
 logger = logging.getLogger(__name__)
 
 @celery_app.task(name="combine_document_results")
-def combine_document_results(pipeline_id: str) -> Dict[str, Any]:
+def combine_document_results(group_result=None, pipeline_id: str = None) -> Dict[str, Any]:
+    # Cuando se usa en una cadena con un grupo, el resultado del grupo se pasa como primer argumento
+    # y puede ser una lista de resultados o un diccionario
+    
+    # Si group_result es una lista, buscar el pipeline_id en los resultados
+    if isinstance(group_result, list) and pipeline_id is None:
+        # Buscar el pipeline_id en los resultados del grupo
+        for result in group_result:
+            if isinstance(result, dict) and "document_id" in result:
+                # Obtener el pipeline_id del primer resultado válido
+                # Necesitamos buscar el pipeline_id en la base de datos
+                document_id = result.get("document_id")
+                if document_id:
+                    # Lo buscaremos más adelante con la sesión de BD
+                    break
+    
+    # Si se llama directamente, pipeline_id será el primer argumento
+    if pipeline_id is None and isinstance(group_result, str):
+        pipeline_id = group_result
+        group_result = None
+    
+    # Registrar información sobre los argumentos recibidos
+    logger.info(f"combine_document_results llamado con: group_result={type(group_result)}, pipeline_id={pipeline_id}")
     """
     Combinar los resultados de procesamiento de múltiples documentos
     
@@ -26,8 +48,23 @@ def combine_document_results(pipeline_id: str) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Resultados combinados
     """
+    # Verificar que tenemos un pipeline_id válido
+    if not pipeline_id:
+        # Si group_result es un diccionario, intentar extraer pipeline_id
+        if isinstance(group_result, dict) and "pipeline_id" in group_result:
+            pipeline_id = group_result.get("pipeline_id")
+            logger.info(f"Extraído pipeline_id {pipeline_id} del resultado del grupo")
+    
+    # Verificar nuevamente que tenemos un pipeline_id válido
+    if not pipeline_id:
+        raise ValueError("No se pudo determinar el pipeline_id para la combinación de documentos")
+    
     # Convertir a UUID
-    pipeline_id_uuid = uuid.UUID(pipeline_id)
+    try:
+        pipeline_id_uuid = uuid.UUID(pipeline_id)
+    except (ValueError, TypeError) as e:
+        logger.error(f"Error al convertir pipeline_id '{pipeline_id}' a UUID: {e}")
+        raise ValueError(f"pipeline_id inválido: {pipeline_id}")
     
     try:
         # Usar context manager para sesiones síncronas en Celery
@@ -40,6 +77,28 @@ def combine_document_results(pipeline_id: str) -> Dict[str, Any]:
                 {"pipeline_id": pipeline_id}
             )
             
+            # Si no tenemos pipeline_id pero tenemos document_id, buscar el pipeline_id
+            if pipeline_id is None and isinstance(group_result, list):
+                for result in group_result:
+                    if isinstance(result, dict) and "document_id" in result:
+                        document_id = result.get("document_id")
+                        if document_id:
+                            # Buscar el pipeline_id usando el document_id
+                            from database.models.analysis_document import PipelineDocument
+                            pipeline_doc = db.query(PipelineDocument).filter(
+                                PipelineDocument.document_id == uuid.UUID(document_id)
+                            ).first()
+                            
+                            if pipeline_doc:
+                                pipeline_id = str(pipeline_doc.pipeline_id)
+                                pipeline_id_uuid = pipeline_doc.pipeline_id
+                                logger.info(f"Encontrado pipeline_id {pipeline_id} para document_id {document_id}")
+                                break
+            
+            # Verificar que tenemos pipeline_id
+            if not pipeline_id:
+                raise ValueError("No se pudo determinar el pipeline_id para la combinación de documentos")
+                
             # Obtener pipeline
             pipeline = db.query(AnalysisPipeline).filter(AnalysisPipeline.id == pipeline_id_uuid).first()
             if not pipeline:
@@ -71,11 +130,15 @@ def combine_document_results(pipeline_id: str) -> Dict[str, Any]:
             for embedding in embeddings:
                 combined_text += embedding.chunk_text + "\n\n"
                 
-            # Actualizar pipeline con el texto combinado
-            pipeline.combined_text_content = combined_text
+            # No intentamos guardar combined_text_content en el pipeline porque no tiene ese atributo
+            # En su lugar, lo pasamos como parte del resultado para la siguiente tarea
             
-            # Guardar cambios
-            db.commit()
+            # Actualizar el estado del pipeline si es necesario
+            from database.models.analysis import PipelineStatus
+            
+            if hasattr(pipeline, 'status') and pipeline.status != PipelineStatus.PROCESSING:
+                pipeline.status = PipelineStatus.PROCESSING
+                db.commit()
             
             # Publicar evento de finalización
             event_manager.publish_realtime(

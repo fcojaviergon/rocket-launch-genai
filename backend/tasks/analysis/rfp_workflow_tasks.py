@@ -20,7 +20,7 @@ from sqlalchemy import func
 logger = logging.getLogger(__name__)
 
 @shared_task(name="process_rfp_documents")
-def process_rfp_documents(document_ids: list, pipeline_id: str, user_id: str, task_id: str) -> Dict[str, Any]:
+def process_rfp_documents(document_ids: list, pipeline_id: str, user_id: str, task_id: str, is_retry: bool = False) -> Dict[str, Any]:
     """
     Procesar documentos RFP de forma asíncrona
     
@@ -34,6 +34,7 @@ def process_rfp_documents(document_ids: list, pipeline_id: str, user_id: str, ta
         pipeline_id: ID del pipeline
         user_id: ID del usuario
         task_id: ID de la tarea
+        is_retry: Indica si es un reintento de análisis
         
     Returns:
         Dict[str, Any]: Resultados del procesamiento
@@ -42,50 +43,87 @@ def process_rfp_documents(document_ids: list, pipeline_id: str, user_id: str, ta
     event_manager = get_event_manager()
     event_manager.publish_realtime(
         f"pipeline:{pipeline_id}",
-        "rfp_processing_started",
+        "processing_started",
         {
             "pipeline_id": pipeline_id,
-            "document_count": len(document_ids)
+            "document_count": len(document_ids),
+            "is_retry": is_retry
         }
     )
     
-    # Verificar qué documentos necesitan procesamiento
-    with get_sync_session_context() as db:
-        docs_to_process = []
-        
-        for doc_id in document_ids:
-            # Verificar estado del documento
-            document = db.query(Document).filter(Document.id == uuid.UUID(doc_id)).first()
-            if not document:
-                logger.warning(f"Documento {doc_id} no encontrado. Omitiendo.")
-                continue
-            
-            from database.models.analysis import PipelineEmbedding
-            # Verificar si hay embeddings existentes como respaldo
-            existing_embeddings = db.query(func.count()).select_from(PipelineEmbedding).filter(
-                PipelineEmbedding.pipeline_id == uuid.UUID(pipeline_id),
-                func.json_extract_path_text(PipelineEmbedding.metadata_info, 'document_id') == str(doc_id)
-            ).scalar()
-            
-            if existing_embeddings > 0:
-                logger.info(f"Se encontraron {existing_embeddings} embeddings existentes para el documento {doc_id}. Omitiendo generación.")
-            else:
-                # Si no hay embeddings existentes y el documento no está marcado como COMPLETED, procesarlo
-                logger.info(f"Documento {doc_id} requiere procesamiento. Estado actual: {document.processing_status}")
-                docs_to_process.append(doc_id)
-        
-        # Si no hay documentos para procesar, usar los originales (para mantener la compatibilidad)
-        if not docs_to_process:
-            logger.info(f"Todos los documentos ya están procesados. Usando los existentes.")
-            docs_to_process = document_ids
-            
+    # Si es un reintento, limpiar el pipeline para empezar de nuevo
+    if is_retry:
+        with get_sync_session_context() as db:
+            try:
+                # Convertir pipeline_id a UUID
+                pipeline_id_uuid = uuid.UUID(pipeline_id)
+                
+                # 1. Limpiar embeddings existentes
+                from database.models.analysis import PipelineEmbedding
+                db.query(PipelineEmbedding).filter(
+                    PipelineEmbedding.pipeline_id == pipeline_id_uuid
+                ).delete(synchronize_session=False)
+                
+                # 2. Resetear el estado del pipeline
+                from database.models.analysis import PipelineStatus
+                pipeline = db.query(RfpAnalysisPipeline).filter(
+                    RfpAnalysisPipeline.id == pipeline_id_uuid
+                ).first()
+                
+                if pipeline:
+                    # Limpiar resultados anteriores
+                    pipeline.extracted_criteria = None
+                    pipeline.evaluation_framework = None
+                    pipeline.results = None
+                    pipeline.status = PipelineStatus.PROCESSING
+                    db.commit()
+                    
+                    logger.info(f"Pipeline {pipeline_id} limpiado para reintento")
+                else:
+                    logger.error(f"No se encontró el pipeline {pipeline_id} para reintento")
+                    
+            except Exception as e:
+                logger.error(f"Error al limpiar pipeline para reintento: {e}")
+                db.rollback()
+    
     # Importar las tareas necesarias usando Celery app
     from tasks.worker import celery_app
     
-    # Crear grupo de tareas para procesar documentos en paralelo
+    # Verificar qué documentos necesitan procesamiento
+    with get_sync_session_context() as db:
+        # Actualizar la relación entre documentos y pipeline
+        from database.models.analysis_document import PipelineDocument
+        
+        # Asegurar que todos los documentos estén asociados al pipeline
+        for doc_id in document_ids:
+            try:
+                doc_uuid = uuid.UUID(doc_id)
+                pipeline_uuid = uuid.UUID(pipeline_id)
+                
+                # Verificar si ya existe la relación
+                existing = db.query(PipelineDocument).filter(
+                    PipelineDocument.pipeline_id == pipeline_uuid,
+                    PipelineDocument.document_id == doc_uuid
+                ).first()
+                
+                if not existing:
+                    # Crear relación si no existe
+                    pipeline_doc = PipelineDocument(
+                        pipeline_id=pipeline_uuid,
+                        document_id=doc_uuid,
+                        processing_order=0  # Orden por defecto
+                    )
+                    db.add(pipeline_doc)
+                    db.commit()
+                    logger.info(f"Asociado documento {doc_id} al pipeline {pipeline_id}")
+            except Exception as e:
+                logger.error(f"Error al asociar documento {doc_id} al pipeline {pipeline_id}: {e}")
+    
+    # Crear grupo para procesamiento paralelo de documentos
+    # Pasar el user_id del solicitante a cada tarea de procesamiento de documentos
     document_tasks = group(
-        celery_app.signature('process_document_content', args=[doc_id, pipeline_id])
-        for doc_id in docs_to_process
+        celery_app.signature('process_document_content', args=[doc_id, pipeline_id, user_id])
+        for doc_id in document_ids
     )
     
     # Crear cadena de tareas: procesar documentos -> combinar resultados -> analizar

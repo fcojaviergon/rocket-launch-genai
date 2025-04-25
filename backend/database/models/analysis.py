@@ -15,6 +15,14 @@ if TYPE_CHECKING:
     from database.models.task import Task
     from database.models.analysis_document import PipelineDocument
 
+
+class PipelineStatus(str, enum.Enum):
+    """Enum for pipeline statuses"""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
 class AnalysisScenario(BaseModel):
     """Model for analysis scenarios (e.g., "")"""
     __tablename__ = "analysis_scenarios"

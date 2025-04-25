@@ -12,22 +12,18 @@ from sqlalchemy.orm import selectinload
 import aiofiles
 
 from database.models.document import Document, ProcessingStatus
-from database.models.analysis import PipelineEmbedding, AnalysisPipeline
+from database.models.analysis import PipelineEmbedding, AnalysisPipeline, ProposalAnalysisPipeline
+from database.models.analysis_document import PipelineDocument
 from schemas.document import DocumentCreate, DocumentUpdate, DocumentResponse
 from core.config import settings
+from sqlalchemy.orm import Session
 
 # Configure logger
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-# load_dotenv() # Removed, should be handled centrally if needed
-
-# Ensure that the storage directory exists - REMOVED as it caused permission errors in worker
-# and is handled within create_document method.
-# os.makedirs(settings.DOCUMENT_STORAGE_PATH, exist_ok=True)
 
 class DocumentService:
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client):
         """
         Initialize DocumentService.
         
@@ -35,6 +31,8 @@ class DocumentService:
             llm_client: Optional LLM client for generating embeddings
         """
         self.llm_client = llm_client
+        self.default_model = "gpt-4o"
+        self.embedding_model = "text-embedding-3-small"
 
     async def create_document(
         self,
@@ -396,6 +394,46 @@ class DocumentService:
             logger.error(f"Error generating query embedding: {e}", exc_info=True)
             # Re-raise a more specific or generic error
             raise RuntimeError(f"Failed to generate query embedding via LLM client: {e}") from e
+        
+    def generate_query_embedding_sync(
+        self,
+        query_text: str,
+        model: str = "text-embedding-3-small"
+    ) -> List[float]:
+        """
+        Generate an embedding for a text query using the configured LLM client (synchronous version)
+        
+        Args:
+            query_text: Text of the query
+            model: Model to use to generate the embedding
+            
+        Returns:
+            List[float]: Embedding vector
+        """
+        if not self.llm_client:
+            logger.error("LLM client not available in DocumentService.")
+            raise RuntimeError("LLM client is not configured for DocumentService.")
+
+        effective_model = model or "text-embedding-3-small"
+        logger.debug(f"Generating query embedding using model: {effective_model}")
+
+        try:
+            # Use the synchronous interface method
+            embeddings_list = self.llm_client.generate_embeddings_sync(
+                texts=[query_text], # Interface expects a list
+                model=effective_model,
+            )
+            
+            if not embeddings_list or not embeddings_list[0]:
+                raise ValueError("LLM client did not return valid embeddings.")
+
+            embedding = embeddings_list[0] # Get the first (and only) embedding
+            logger.debug(f"Successfully generated query embedding. Dimension: {len(embedding)}")
+            return embedding
+        except Exception as e:
+            logger.error(f"Error generating query embedding: {e}", exc_info=True)
+            # Re-raise a more specific or generic error
+            raise RuntimeError(f"Failed to generate query embedding via LLM client: {e}") from e
     
     async def rag_search(
         self,
@@ -485,4 +523,125 @@ class DocumentService:
             logger.error(f"Error fatal durante la búsqueda en el escenario {analysis_id}: {str(e)}", exc_info=True)
             raise e # Re-lanzar para que el endpoint lo maneje
     
-   
+    def search_documents_by_analysis_id_sync(
+        self,
+        db: Session,
+        query: str,
+        model: str,
+        limit: int,
+        min_similarity: float,
+        user_id: UUID,
+        pipeline_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca fragmentos dentro de un escenario de análisis específico basado en similitud semántica.
+        Reutiliza la lógica de búsqueda principal pero se enfoca en un escenario específico.
+        """
+        logger.info(f"Iniciando búsqueda semántica en el escenario {pipeline_id} con query='{query}', model='{model}', limit={limit}, min_similarity={min_similarity}")
+        try:
+            # 1. Generar embedding para la consulta usando el método síncrono del servicio
+            query_embedding = self.generate_query_embedding_sync(query, model)
+            
+            logger.info(f"Embedding generado con {len(query_embedding)} dimensiones")
+
+            # 2. Llamar al método search_similar_documents con el ID del escenario
+            search_results = self.search_similar_documents_sync(
+                db=db,
+                query_embedding=query_embedding,
+                model=model,
+                limit=limit,
+                min_similarity=min_similarity,
+                user_id=user_id,
+                pipeline_id=pipeline_id # Pasar el ID del escenario específico
+            )
+
+            logger.info(f"Búsqueda encontró {len(search_results)} resultados en el escenario {pipeline_id}.")
+
+            return search_results
+
+        except ValueError as ve:
+            # Manejo específico para errores de generación de embeddings
+            logger.error(f"Error generando embedding para la consulta '{query}': {ve}", exc_info=True)
+            raise ValueError(f"No se pudo generar embedding para la consulta: {ve}") from ve
+        except Exception as e:
+            logger.error(f"Error fatal durante la búsqueda en el escenario {pipeline_id}: {str(e)}", exc_info=True)
+            raise e # Re-lanzar para que el endpoint lo maneje
+        
+        
+    def search_similar_documents_sync(
+        self,
+        db: Session, 
+        query_embedding: List[float], 
+        user_id: UUID, 
+        limit: int = 5, 
+        min_similarity: float = 0.2,
+        model: str = "text-embedding-3-small",
+        pipeline_id: Optional[UUID] = None # Add optional analysis_id filter
+    ) -> List[Dict[str, Any]]: # Return list of dicts representing chunks
+        """
+        Busca fragmentos de documentos similares basados en vectores de embedding.
+        Retorna una lista de fragmentos con información del documento y similitud.
+        Ahora usa PipelineEmbedding en lugar de DocumentEmbedding.
+        """
+        logger.info(f"Buscando documentos similares con {len(query_embedding)} dimensiones, min_similarity={min_similarity}")
+        
+        try:
+            # Preparar la consulta
+            # Convertir el embedding a un array de NumPy para pgvector
+            from pgvector.sqlalchemy import Vector
+            import numpy as np
+            
+            # Convertir a array numpy y luego al formato pgvector
+            query_vector = np.array(query_embedding, dtype=np.float32).tolist()
+            
+            # Calcular similitud de coseno
+            from sqlalchemy import func
+            similarity = func.cosine_similarity(PipelineEmbedding.embedding_vector, query_vector)
+            
+            # Comenzar a construir la consulta con select_from para establecer explícitamente el lado izquierdo
+            query = (
+                select(
+                    PipelineEmbedding,
+                    PipelineDocument,
+                    Document,
+                    similarity.label("similarity")
+                )
+                .select_from(PipelineEmbedding)
+                .join(PipelineDocument, PipelineEmbedding.pipeline_id == PipelineDocument.pipeline_id)
+                .join(Document, Document.id == PipelineDocument.document_id)
+                .where(similarity >= min_similarity)
+            )
+                       
+            # Ordenar por similitud descendente y limitar resultados
+            query = query.order_by(similarity.desc()).limit(limit)
+            
+            # Ejecutar la consulta
+            result = db.execute(query)
+            rows = result.all()
+            
+            # Procesar los resultados
+            results = []
+            for row in rows:
+                embedding, pipeline, document, similarity_score = row
+                
+                # Formatear el resultado
+                result_item = {
+                    "document_id": str(document.id),
+                    "document_title": document.title,
+                    "pipeline_id": str(pipeline.id),
+                    "pipeline_type": pipeline.pipeline_type.value,
+                    "chunk_text": embedding.chunk_text,
+                    "chunk_index": embedding.chunk_index,
+                    "similarity": float(similarity_score),
+                    "model": embedding.metadata_info.get("model", "unknown")
+                }
+                
+                results.append(result_item)
+                
+            logger.info(f"Encontrados {len(results)} documentos similares")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error buscando documentos similares: {e}", exc_info=True)
+            raise
+    

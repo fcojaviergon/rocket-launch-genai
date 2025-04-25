@@ -205,8 +205,8 @@ class AnalysisService:
         )
         
         # 6. Launch Celery task (versión asíncrona)
-        from tasks.analysis.rfp_workflow_tasks import process_rfp_documents_async
-        celery_task = process_rfp_documents_async.delay(
+        from tasks.analysis.rfp_workflow_tasks import process_rfp_documents
+        celery_task = process_rfp_documents.delay(
             document_ids=[str(doc.id) for doc in documents],
             pipeline_id=str(pipeline.id),
             user_id=str(user.id),
@@ -329,8 +329,8 @@ class AnalysisService:
         )
         
         # 7. Launch Celery task (versión asíncrona)
-        from tasks.analysis.proposal_workflow_tasks import process_proposal_documents_async
-        celery_task = process_proposal_documents_async.delay(
+        from tasks.analysis.proposal_workflow_tasks import process_proposal_documents
+        celery_task = process_proposal_documents.delay(
             document_ids=[str(doc.id) for doc in documents],
             pipeline_id=str(pipeline.id),
             rfp_pipeline_id=str(rfp_pipeline_id),
@@ -375,27 +375,48 @@ class AnalysisService:
             raise ValueError(f"Pipeline {pipeline_id} not found")
             
         # 2. Reset pipeline status
-        pipeline.status = "pending"
+        from database.models.analysis import PipelineStatus
+        pipeline.status = PipelineStatus.PENDING
         pipeline.completed_at = None
         
-        # 3. Get principal document for task name
+        # 3. Obtener todos los documentos asociados al pipeline
+        from database.models.analysis_document import PipelineDocument
         result = await db.execute(
-            select(Document).filter(Document.id == pipeline.principal_document_id)
+            select(PipelineDocument).filter(PipelineDocument.pipeline_id == pipeline_id)
         )
-        document = result.scalar_one_or_none()
+        pipeline_documents = result.scalars().all()
         
-        if not document:
-            raise ValueError(f"Principal document not found for pipeline {pipeline_id}")
+        # Obtener los IDs de documentos
+        document_ids = []
+        for pd in pipeline_documents:
+            document_ids.append(pd.document_id)
+            
+        if not document_ids:
+            raise ValueError(f"No hay documentos asociados al pipeline {pipeline_id}")
             
         # 4. Create task based on pipeline type
         if pipeline.pipeline_type == PipelineType.RFP_ANALYSIS:
-            # 5. Create task for RFP analysis
-            primary_doc = document  # First document is considered primary for task naming
-            task_name = f"RFP Analysis of {primary_doc.title} (reprocessing)"
+            # Obtener los documentos para el nombre de la tarea
+            result = await db.execute(
+                select(Document).filter(Document.id.in_([doc_id for doc_id in document_ids]))
+            )
+            documents = result.scalars().all()
+            
+            if not documents:
+                raise ValueError(f"No se encontraron documentos para el pipeline {pipeline_id}")
+                
+            # Usar el primer documento para el nombre de la tarea
+            primary_doc = documents[0]
+            task_name = f"RFP Analysis (reintento) - {primary_doc.title}"
+            
+            # Parámetros para la tarea
             parameters = {
-                "document_ids": [str(doc.id) for doc in [document]],
-                "pipeline_id": str(pipeline.id)
+                "document_ids": [str(doc_id) for doc_id in document_ids],
+                "pipeline_id": str(pipeline.id),
+                "is_retry": True
             }
+            
+            # Crear tarea
             task = await task_manager.create_task(
                 db=db,
                 task_name=task_name,
@@ -407,29 +428,44 @@ class AnalysisService:
                 user=user
             )
             
-            # Launch Celery task (versión asíncrona)
-            from tasks.analysis.rfp_workflow_tasks import process_rfp_documents_async
-            celery_task = process_rfp_documents_async.delay(
-                document_ids=[str(doc.id) for doc in [document]],
+            # Lanzar tarea Celery con flag is_retry=True
+            from tasks.analysis.rfp_workflow_tasks import process_rfp_documents
+            celery_task = process_rfp_documents.delay(
+                document_ids=[str(doc_id) for doc_id in document_ids],
                 pipeline_id=str(pipeline.id),
                 user_id=str(user.id),
-                task_id=str(task.id)
+                task_id=str(task.id),
+                is_retry=True
             )
             
         elif pipeline.pipeline_type == PipelineType.PROPOSAL_ANALYSIS:
-            # Get RFP pipeline
-            rfp_pipeline_id = pipeline.parent_pipeline_id
+            # Obtener el pipeline RFP referenciado
+            rfp_pipeline_id = pipeline.referenced_rfp_id
             if not rfp_pipeline_id:
                 raise ValueError("Proposal pipeline has no associated RFP pipeline")
                 
-            # 6. Create task for proposal analysis
-            primary_doc = document  # First document is considered primary for task naming
-            task_name = f"Proposal Analysis of {primary_doc.title} (reprocessing)"
+            # Obtener los documentos para el nombre de la tarea
+            result = await db.execute(
+                select(Document).filter(Document.id.in_([doc_id for doc_id in document_ids]))
+            )
+            documents = result.scalars().all()
+            
+            if not documents:
+                raise ValueError(f"No se encontraron documentos para el pipeline {pipeline_id}")
+                
+            # Usar el primer documento para el nombre de la tarea
+            primary_doc = documents[0]
+            task_name = f"Proposal Analysis (reintento) - {primary_doc.title}"
+            
+            # Parámetros para la tarea
             parameters = {
-                "document_ids": [str(doc.id) for doc in [document]],
+                "document_ids": [str(doc_id) for doc_id in document_ids],
                 "pipeline_id": str(pipeline.id),
-                "rfp_pipeline_id": str(rfp_pipeline_id)
+                "rfp_pipeline_id": str(rfp_pipeline_id),
+                "is_retry": True
             }
+            
+            # Crear tarea
             task = await task_manager.create_task(
                 db=db,
                 task_name=task_name,
@@ -441,14 +477,15 @@ class AnalysisService:
                 user=user
             )
             
-            # Launch Celery task (versión asíncrona)
-            from tasks.analysis.proposal_workflow_tasks import process_proposal_documents_async
-            celery_task = process_proposal_documents_async.delay(
-                document_ids=[str(doc.id) for doc in [document]],
+            # Lanzar tarea Celery con flag is_retry=True
+            from tasks.analysis.proposal_workflow_tasks import process_proposal_documents
+            celery_task = process_proposal_documents.delay(
+                document_ids=[str(doc_id) for doc_id in document_ids],
                 pipeline_id=str(pipeline.id),
                 rfp_pipeline_id=str(rfp_pipeline_id),
                 user_id=str(user.id),
-                task_id=str(task.id)
+                task_id=str(task.id),
+                is_retry=True
             )
         else:
             raise ValueError(f"Unsupported pipeline type: {pipeline.pipeline_type}")

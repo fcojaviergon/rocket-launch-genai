@@ -43,6 +43,107 @@ class OpenAIClient(LLMClientInterface):
                 # Propagate the error to prevent using a non-functional client
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}") from e
 
+    def generate_chat_completion_sync(
+        self,
+        messages: List[LLMMessage],
+        model: str = None,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        stream: bool = False,
+        user_id: Optional[str] = None
+    ) -> Union[str, Generator[str, None, None]]:
+        """Versión síncrona de generate_chat_completion para uso en tareas Celery síncronas."""
+        if not self.sync_client:
+             raise RuntimeError("OpenAIClient sync client is not initialized.")
+        
+        # Usar modelo por defecto si no se especifica
+        model = model or self.default_model
+        
+        # Contar tokens en los mensajes para validar límites de contexto
+        prompt_tokens = self.token_counter.count_message_tokens(messages, model)
+        
+        # Verificar si excede el límite de contexto
+        if not self.token_counter.check_context_limit(prompt_tokens, model):
+            error_msg = f"El prompt excede el límite de contexto del modelo {model} ({prompt_tokens} tokens)"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Verificar cuota de usuario si se proporciona ID
+        if user_id:
+            try:
+                from database.session import get_sync_session_context
+                from core.token_usage_tracker import TokenUsageTracker
+                
+                # Usar context manager para sesión síncrona
+                with get_sync_session_context() as db:
+                    tracker = TokenUsageTracker(db)
+                    
+                    # Verificar cuota (versión síncrona)
+                    quota_check = tracker.check_user_quota_sync(user_id)
+                    
+                    if not quota_check.get("has_quota", True):
+                        error_msg = f"Usuario {user_id} ha excedido su cuota mensual de tokens"
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
+            except Exception as e:
+                logger.error(f"Error al verificar cuota de usuario {user_id}: {e}")
+                # Continuar si hay error en la verificación
+        
+        request_params = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        
+        if max_tokens is not None:
+            request_params["max_tokens"] = max_tokens
+            
+        if response_format is not None:
+            request_params["response_format"] = response_format
+        
+        # Función para generar respuestas en streaming
+        def stream_generator():
+            try:
+                stream_response = self.sync_client.chat.completions.create(
+                    **request_params,
+                    stream=True
+                )
+                for chunk in stream_response:
+                    if chunk.choices and len(chunk.choices) > 0:
+                        content = chunk.choices[0].delta.content
+                        if content is not None:
+                            yield content
+            except Exception as e:
+                logger.error(f"Error en streaming de respuesta: {e}")
+                yield f"[Error: {str(e)}]"
+        
+        # Manejar streaming
+        if stream:
+            return stream_generator()
+            
+        # Caso no streaming
+        try:
+            logger.debug(f"Calling OpenAI chat completion (sync): model={model}, temperature={temperature}")
+            response = self.sync_client.chat.completions.create(
+                **request_params,
+                stream=False
+            )
+            
+            # Extraer respuesta
+            result = response.choices[0].message.content
+            
+            # Registrar uso de tokens
+            if user_id:
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                self._record_token_usage_sync(user_id, model, prompt_tokens, completion_tokens, "chat")
+            
+            return result
+        except Exception as e:
+            logger.error(f"OpenAI API error during chat completion (sync): {e}", exc_info=True)
+            raise
+    
     async def generate_chat_completion(
         self,
         messages: List[LLMMessage],
@@ -145,7 +246,7 @@ class OpenAIClient(LLMClientInterface):
 
     async def _record_token_usage(self, user_id: str, model: str, prompt_tokens: int, completion_tokens: int, operation_type: str, metadata: dict = None):
         """
-        Registrar uso de tokens en la base de datos
+        Registrar uso de tokens en la base de datos de forma asíncrona
         
         Args:
             user_id: ID del usuario
@@ -158,28 +259,65 @@ class OpenAIClient(LLMClientInterface):
             from database.session import get_async_session_context
             from core.token_usage_tracker import TokenUsageTracker
             
-            # Obtener sesión de base de datos
-            db = get_async_session_context()
-            tracker = TokenUsageTracker(db)
-            
-            # Registrar uso
-            usage_result = await tracker.record_usage(
-                user_id=user_id,
-                model=model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                operation_type=operation_type
-            )
-            
-            # Estimar costo
-            cost = tracker.estimate_cost(model, prompt_tokens, completion_tokens)
-            
-            logger.info(f"Token usage recorded for user {user_id}: {prompt_tokens + completion_tokens} tokens, cost: ${cost['total_cost']:.6f}")
-            
-            db.close()
-            return usage_result
+            # Obtener sesión de base de datos con context manager
+            async with get_async_session_context() as db:
+                tracker = TokenUsageTracker(db)
+                
+                # Registrar uso
+                usage_result = await tracker.record_usage(
+                    user_id=user_id,
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    operation_type=operation_type
+                )
+                
+                # Estimar costo
+                cost = tracker.estimate_cost(model, prompt_tokens, completion_tokens)
+                
+                logger.info(f"Token usage recorded for user {user_id}: {prompt_tokens + completion_tokens} tokens, cost: ${cost['total_cost']:.6f}")
+                
+                return usage_result
         except Exception as e:
             logger.error(f"Error recording token usage: {e}")
+            return {"recorded": False, "error": str(e)}
+            
+    def _record_token_usage_sync(self, user_id: str, model: str, prompt_tokens: int, completion_tokens: int, operation_type: str, metadata: dict = None):
+        """
+        Registrar uso de tokens en la base de datos de forma síncrona
+        
+        Args:
+            user_id: ID del usuario
+            model: Modelo utilizado
+            prompt_tokens: Tokens del prompt
+            completion_tokens: Tokens de la respuesta
+            operation_type: Tipo de operación (chat, embedding, etc.)
+        """
+        try:
+            from database.session import get_sync_session_context
+            from core.token_usage_tracker import TokenUsageTracker
+            
+            # Obtener sesión de base de datos con context manager
+            with get_sync_session_context() as db:
+                tracker = TokenUsageTracker(db)
+                
+                # Registrar uso (versión síncrona)
+                usage_result = tracker.record_usage_sync(
+                    user_id=user_id,
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    operation_type=operation_type
+                )
+                
+                # Estimar costo
+                cost = tracker.estimate_cost(model, prompt_tokens, completion_tokens)
+                
+                logger.info(f"Token usage recorded for user {user_id}: {prompt_tokens + completion_tokens} tokens, cost: ${cost['total_cost']:.6f} (sync)")
+                
+                return usage_result
+        except Exception as e:
+            logger.error(f"Error recording token usage (sync): {e}")
             return {"recorded": False, "error": str(e)}
     
     async def generate_embeddings(
@@ -204,25 +342,22 @@ class OpenAIClient(LLMClientInterface):
                 from core.token_usage_tracker import TokenUsageTracker
                 
                 # Obtener sesión de base de datos
-                db = get_async_session_context()
-                tracker = TokenUsageTracker(db)
-                
-                # Verificar cuota
-                quota_check = await tracker.check_user_quota(user_id)
-                
-                if not quota_check.get("has_quota", True):
-                    error_msg = f"Usuario {user_id} ha excedido su cuota mensual de tokens"
-                    logger.error(error_msg)
-                    await db.close()
-                    raise ValueError(error_msg)
+                async with get_async_session_context() as db:
+                    tracker = TokenUsageTracker(db)
                     
-                await db.close()
+                    # Verificar cuota
+                    quota_check = await tracker.check_user_quota(user_id)
+                    
+                    if not quota_check.get("has_quota", True):
+                        error_msg = f"Usuario {user_id} ha excedido su cuota mensual de tokens"
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
             except Exception as e:
                 logger.error(f"Error al verificar cuota de usuario {user_id}: {e}")
                 # Continuar si hay error en la verificación
              
         try:
-            logger.debug(f"Calling OpenAI embeddings: model={model}, num_texts={len(texts)}, total_tokens={total_tokens}")
+            logger.debug(f"Calling OpenAI embeddings async: model={model}, num_texts={len(texts)}, total_tokens={total_tokens}")
             response = await self.client.embeddings.create(
                 input=texts,
                 model=model
@@ -238,5 +373,62 @@ class OpenAIClient(LLMClientInterface):
             
             return embeddings
         except Exception as e:
-            logger.error(f"OpenAI API error during embedding generation: {e}", exc_info=True)
+            logger.error(f"OpenAI API error during async embedding generation: {e}", exc_info=True)
+            raise
+            
+    def generate_embeddings_sync(
+        self,
+        texts: List[str],
+        model: str = None,
+        user_id: Optional[str] = None
+    ) -> List[List[float]]:
+        """Versión síncrona de generate_embeddings para uso en tareas Celery síncronas."""
+        if not self.sync_client:
+             raise RuntimeError("OpenAIClient sync client is not initialized.")
+        
+        # Usar modelo por defecto si no se especifica
+        model = model or self.default_embedding_model
+        
+        # Contar tokens en los textos
+        total_tokens = sum(self.token_counter.count_tokens(text, model) for text in texts)
+        
+        # Verificar cuota de usuario si se proporciona ID
+        if user_id:
+            try:
+                from database.session import get_sync_session_context
+                from core.token_usage_tracker import TokenUsageTracker
+                
+                # Usar context manager para sesión síncrona
+                with get_sync_session_context() as db:
+                    tracker = TokenUsageTracker(db)
+                    
+                    # Verificar cuota (versión síncrona)
+                    quota_check = tracker.check_user_quota_sync(user_id)
+                    
+                    if not quota_check.get("has_quota", True):
+                        error_msg = f"Usuario {user_id} ha excedido su cuota mensual de tokens"
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
+            except Exception as e:
+                logger.error(f"Error al verificar cuota de usuario {user_id}: {e}")
+                # Continuar si hay error en la verificación
+             
+        try:
+            logger.debug(f"Calling OpenAI embeddings sync: model={model}, num_texts={len(texts)}, total_tokens={total_tokens}")
+            response = self.sync_client.embeddings.create(
+                input=texts,
+                model=model
+            )
+            embeddings = [item.embedding for item in response.data]
+            logger.debug(f"Received {len(embeddings)} embeddings from OpenAI (sync).")
+            
+            # Registrar uso de tokens
+            if user_id:
+                # En embeddings solo hay prompt tokens, no completion tokens
+                prompt_tokens = response.usage.total_tokens
+                self._record_token_usage_sync(user_id, model, prompt_tokens, 0, "embedding")
+            
+            return embeddings
+        except Exception as e:
+            logger.error(f"OpenAI API error during sync embedding generation: {e}", exc_info=True)
             raise

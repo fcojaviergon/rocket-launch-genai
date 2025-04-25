@@ -7,7 +7,7 @@ CRITERION_EVALUATOR_SYSTEM_PROMPT = """
 You are a senior consultant with experience in evaluating proposals against RFP criteria.
 """
 
-def get_criterion_evaluation_prompt(criterion_title, criterion_description, relevant_text, scoring_scale_text):
+def get_criterion_evaluation_prompt(criterion_title, criterion_description, chunk, scoring_scale_text):
     """Genera el prompt para evaluar un criterio específico"""
     return f"""
 Evaluate how the proposal addresses the following RFP criterion:
@@ -16,7 +16,7 @@ CRITERION: {criterion_title}
 DESCRIPTION: {criterion_description}
 
 RELEVANT CONTEXT FROM THE PROPOSAL:
-{relevant_text}
+{chunk}
 
 SCORING SCALE (1-5):
 {scoring_scale_text}

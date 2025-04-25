@@ -44,7 +44,12 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login
 
 @lru_cache(maxsize=None)
 def get_llm_client_instance() -> Optional[LLMClientInterface]:
-    """Creates and returns a singleton LLM client instance based on settings."""
+    """Creates and returns a singleton LLM client instance based on settings.
+    
+    Esta función devuelve un cliente LLM que puede ser usado tanto en contextos síncronos
+    (para tareas Celery) como asíncronos (para FastAPI). El cliente tiene métodos con
+    versiones síncronas (_sync) y asíncronas para todas las operaciones.
+    """
     provider = settings.AI_PROVIDER.lower()
     client: Optional[LLMClientInterface] = None
     logger.info(f"Attempting to initialize LLM client for provider: '{provider}'")
@@ -52,6 +57,7 @@ def get_llm_client_instance() -> Optional[LLMClientInterface]:
     if provider == "openai":
         try:
             client = OpenAIClient()
+            logger.info(f"Successfully initialized OpenAI client with both sync and async capabilities")
         except Exception as e:
             logger.error(f"Failed to initialize OpenAIClient: {e}", exc_info=True)
             # Decide if we should raise an error or return None
@@ -59,6 +65,7 @@ def get_llm_client_instance() -> Optional[LLMClientInterface]:
     elif provider == "anthropic":
         try:
             client = AnthropicClient()
+            logger.info(f"Successfully initialized Anthropic client with both sync and async capabilities")
         except Exception as e:
             logger.error(f"Failed to initialize AnthropicClient: {e}", exc_info=True)
             # Returning None allows app to start but features will fail
@@ -66,9 +73,7 @@ def get_llm_client_instance() -> Optional[LLMClientInterface]:
         logger.error(f"Unsupported AI_PROVIDER configured: '{provider}'")
         # Optionally raise ValueError("Invalid AI Provider") if startup should fail
         
-    if client:
-         logger.info(f"Successfully initialized LLM client for '{provider}'")
-    else:
+    if not client:
          logger.error(f"LLM Client initialization failed for provider '{provider}'. AI features may not work.")
          
     return client
@@ -77,10 +82,10 @@ def get_llm_client_instance() -> Optional[LLMClientInterface]:
 async def get_llm_client_instance_async() -> Optional[LLMClientInterface]:
     """Versión asíncrona que devuelve el mismo cliente LLM singleton.
     
-    Esta función es necesaria para contextos asíncronos como tareas Celery asíncronas.
-    Simplemente llama a la versión síncrona, ya que la inicialización del cliente es síncrona.
+    Esta función es necesaria para contextos asíncronos como FastAPI.
+    Simplemente llama a la versión síncrona, ya que el cliente soporta ambos modos.
     """
-    # Usamos la versión síncrona ya que la inicialización es la misma
+    # Usamos la versión síncrona ya que el cliente soporta ambos modos
     return get_llm_client_instance()
 
 @lru_cache(maxsize=None)

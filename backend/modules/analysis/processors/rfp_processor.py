@@ -23,7 +23,7 @@ class RfpProcessor:
     
     def __init__(self, llm_client: LLMClientInterface):
         self.llm_client = llm_client
-        self.default_model = "gpt-4o"
+        self.default_model = "gpt-4-mini"
     
     def analyze_rfp_content(self, combined_text: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -82,22 +82,32 @@ class RfpProcessor:
                     ("user", get_criteria_extraction_prompt(text_content))
                 ]
                 
-                # Necesitamos usar asyncio.run para llamar a la función asíncrona
-                response = asyncio.run(self.llm_client.generate_chat_completion(
+                # Usar el método síncrono en lugar de asyncio.run para evitar conflictos con el bucle de eventos
+                response = self.llm_client.generate_chat_completion_sync(
                     messages=[
                         {"role": message[0], "content": message[1]} for message in messages
                     ],
                     model=self.default_model,
                     response_format={"type": "json_object"},
                     user_id=user_id
-                ))
+                )
                 
                 # Procesar respuesta
                 import json
-                if isinstance(response, str):
-                    criteria = json.loads(response)
-                else:
-                    criteria = json.loads(response.choices[0].message.content)
+                try:
+                    if isinstance(response, str):
+                        criteria = json.loads(response)
+                    else:
+                        criteria = json.loads(response.choices[0].message.content)
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Error al decodificar JSON de respuesta LLM: {json_err}")
+                    # Si hay error al decodificar, devolver un diccionario con el error
+                    return {
+                        "criteria": [],
+                        "summary": f"Error al decodificar respuesta: {str(json_err)}",
+                        "error": str(json_err),
+                        "raw_response": str(response)[:500]  # Incluir parte de la respuesta para depuración
+                    }
                 
                 return criteria
             else:
@@ -159,22 +169,34 @@ class RfpProcessor:
                     ("user", get_framework_generation_prompt(criteria))
                 ]
                 
-                # Necesitamos usar asyncio.run para llamar a la función asíncrona
-                response = asyncio.run(self.llm_client.generate_chat_completion(
+                # Usar el método síncrono en lugar de asyncio.run para evitar conflictos con el bucle de eventos
+                response = self.llm_client.generate_chat_completion_sync(
                     messages=[
                         {"role": message[0], "content": message[1]} for message in messages
                     ],
                     model=self.default_model,
                     response_format={"type": "json_object"},
                     user_id=user_id
-                ))
+                )
                 
                 # Procesar respuesta
                 import json
-                if isinstance(response, str):
-                    framework = json.loads(response)
-                else:
-                    framework = json.loads(response.choices[0].message.content)
+                try:
+                    if isinstance(response, str):
+                        framework = json.loads(response)
+                    else:
+                        framework = json.loads(response.choices[0].message.content)
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Error al decodificar JSON de respuesta LLM: {json_err}")
+                    # Si hay error al decodificar, devolver un diccionario con el error
+                    return {
+                        "weighted_criteria": [],
+                        "scoring_scale": [],
+                        "evaluation_guide": "",
+                        "summary": f"Error al decodificar respuesta: {str(json_err)}",
+                        "error": str(json_err),
+                        "raw_response": str(response)[:500]  # Incluir parte de la respuesta para depuración
+                    }
                 
                 # Validate framework structure
                 if not all(

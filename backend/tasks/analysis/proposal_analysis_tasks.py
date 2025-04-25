@@ -20,11 +20,12 @@ from tasks.worker import celery_app
 logger = logging.getLogger(__name__)
 
 @celery_app.task(name="analyze_proposal_content")
-def analyze_proposal_content(pipeline_id: str, rfp_pipeline_id: str, user_id: str, task_id: str) -> Dict[str, Any]:
+def analyze_proposal_content(previous_result=None, pipeline_id: str = None, rfp_pipeline_id: str = None, user_id: str = None, task_id: str = None) -> Dict[str, Any]:
     """
     Analizar el contenido combinado de la propuesta contra los criterios del RFP
     
     Args:
+        previous_result: Resultado previo (debe contener combined_text_content)
         pipeline_id: ID del pipeline de propuesta
         rfp_pipeline_id: ID del pipeline de RFP referenciado
         user_id: ID del usuario
@@ -40,6 +41,22 @@ def analyze_proposal_content(pipeline_id: str, rfp_pipeline_id: str, user_id: st
     
     # Obtener el gestor de eventos
     event_manager = get_event_manager()
+    
+        # Manejar el caso cuando se recibe el resultado anterior como primer argumento
+    if pipeline_id is None and isinstance(previous_result, str):
+        # Si el primer argumento es un string y no se proporcionó pipeline_id, asumimos que es el pipeline_id
+        pipeline_id = previous_result
+        previous_result = None
+    elif isinstance(previous_result, dict) and pipeline_id is None:
+        # Si el primer argumento es un diccionario (resultado de combine_document_results)
+        # y no se proporcionó pipeline_id, intentamos extraerlo del resultado
+        pipeline_id = previous_result.get("pipeline_id")
+        
+    # Verificar que tenemos todos los argumentos necesarios
+    if not pipeline_id or not user_id:
+        error_msg = f"Faltan argumentos requeridos: pipeline_id={pipeline_id}, user_id={user_id}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
     
     try:
         # Usar context manager para sesiones síncronas en Celery
@@ -86,34 +103,37 @@ def analyze_proposal_content(pipeline_id: str, rfp_pipeline_id: str, user_id: st
             # Si no hay documentos, lanzar error
             if not associated_documents:
                 raise ValueError(f"No se encontraron documentos asociados al pipeline {pipeline_id}")
-                
-            # Usar el primer documento como primario para la interfaz
-            primary_document = associated_documents[0]
-            document_dict = {
-                "id": primary_document.id,
-                "title": primary_document.title,
-                "file_path": primary_document.file_path,
-                "filename": primary_document.filename,
-                "associated_documents": [{
-                    "id": doc.id,
-                    "title": doc.title
-                } for doc in associated_documents]
-            }
+
+            # Obtener texto combinado del resultado anterior o de los embeddings almacenados
+            combined_text = ""
             
+            if isinstance(previous_result, dict) and "combined_text_content" in previous_result:
+                combined_text = previous_result.get("combined_text_content", "")
+                logger.info(f"Usando texto combinado del resultado anterior: {len(combined_text)} caracteres")
+            
+            # Verificar que hay texto combinado
+            if not combined_text:
+                logger.error("No se pudo obtener texto combinado para analizar")
+                return {
+                    "success": False,
+                    "pipeline_id": pipeline_id,
+                    "error": "No se pudo obtener texto combinado para analizar"
+                }
+                
             # Obtener texto combinado de la propuesta
-            proposal_text = pipeline.combined_text_content
+            proposal_text = combined_text
             
             if not proposal_text:
                 raise ValueError("No hay contenido de texto combinado para analizar")
             
             # Inicializar procesadores
             from modules.analysis.processors.proposal_processor import ProposalProcessor
-            from modules.documents.service import DocumentService
+            from modules.document.service import DocumentService
             from core.dependencies import get_llm_client_instance
             
             # Obtener cliente LLM
             llm_client = get_llm_client_instance()
-            document_service = DocumentService()
+            document_service = DocumentService(llm_client=llm_client)
             proposal_processor = ProposalProcessor(llm_client=llm_client, document_service=document_service)
             
             # Ejecutar el análisis de la propuesta
@@ -122,7 +142,8 @@ def analyze_proposal_content(pipeline_id: str, rfp_pipeline_id: str, user_id: st
             # Llamar directamente al método síncrono
             analysis_results = proposal_processor.analyze_proposal_content(
                 proposal_text=proposal_text,
-                rfp_analysis=rfp_pipeline.results or {},
+                extracted_criteria=rfp_pipeline.extracted_criteria,
+                evaluation_framework=rfp_pipeline.evaluation_framework,
                 pipeline_id=pipeline_id_uuid,
                 db=db,  # Usamos la sesión síncrona directamente
                 user_id=str(user_id_uuid)

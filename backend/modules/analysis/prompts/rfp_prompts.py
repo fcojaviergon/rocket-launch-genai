@@ -22,32 +22,16 @@ Analyze the following Request for Proposal (RFP) document and extract the key ev
     e) For each criterion, specify the type of evidence or information that would constitute a strong response.
 
 Return the results in JSON format with the following structure:
-{
-    "criteria": [
-        {{
-            "title": "Specific Criterion Title",
-            "description": "Detailed explanation of what should be evaluated",
-            "key_indicators": [
-                "Indicator 1",
-                "Indicator 2",
-                "Indicator 3",
-                "Indicator 4",
-                "Indicator 5"
-            ],
-              "retrieve_search_text": [
-                "Retrieve search text 1",
-                "Retrieve search text 2",
-                "Retrieve search text 3"
-            ],
-            "evidence_of_strong_response": [
-                "Strong response 1",
-                "Strong response 2",
-                "Strong response 3"
-            ]
-        }},
-        ...
-    ]
-}
+{{"criteria": [
+    {{"title": "Specific Criterion Title",
+      "description": "Detailed explanation of what should be evaluated",
+      "key_indicators": ["Indicator 1", "Indicator 2", "Indicator 3", "Indicator 4", "Indicator 5"],
+      "retrieve_search_text": ["Retrieve search text 1", "Retrieve search text 2", "Retrieve search text 3"],
+      "evidence_of_strong_response": ["Strong response 1", "Strong response 2", "Strong response 3"]}},
+    ...
+  ]
+}}
+
 Ensure your response is a valid JSON object that can be parsed.
 Respond in the same language as the RFP document.
 

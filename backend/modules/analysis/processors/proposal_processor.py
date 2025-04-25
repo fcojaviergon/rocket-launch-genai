@@ -34,7 +34,8 @@ class ProposalProcessor:
     def analyze_proposal_content(
         self, 
         proposal_text: str, 
-        rfp_analysis: Dict[str, Any],
+        extracted_criteria: Dict[str, Any],
+        evaluation_framework: Dict[str, Any],
         pipeline_id: uuid.UUID,
         db: Session,
         user_id: Optional[str] = None
@@ -44,7 +45,8 @@ class ProposalProcessor:
         
         Args:
             proposal_text: Texto de la propuesta
-            rfp_analysis: Análisis previo del RFP
+            extracted_criteria: Criterios extraídos del RFP
+            evaluation_framework: Framework de evaluación del RFP
             pipeline_id: ID del pipeline de análisis
             db: Sesión de base de datos
             user_id: ID del usuario para registro de tokens
@@ -55,64 +57,117 @@ class ProposalProcessor:
         logger.info(f"Iniciando análisis de propuesta para pipeline {pipeline_id}")
         
         # Extraer criterios y framework de evaluación del análisis de RFP
-        criteria = rfp_analysis.get("criteria", {}).get("criteria", [])
-        framework = rfp_analysis.get("framework", {})
-        weighted_criteria = framework.get("weighted_criteria", [])
-        scoring_scale = framework.get("scoring_scale", [])
+        # Verificar si extracted_criteria es un diccionario con la clave 'criteria'
+        if isinstance(extracted_criteria, dict) and 'criteria' in extracted_criteria:
+            criteria_list = extracted_criteria.get('criteria', [])
+        else:
+            # Si no es un diccionario o no tiene la clave 'criteria', usar directamente
+            criteria_list = extracted_criteria if isinstance(extracted_criteria, list) else []
         
-        if not criteria or not weighted_criteria:
-            logger.error(f"No se encontraron criterios o pesos en el análisis de RFP para pipeline {pipeline_id}")
+        # Verificar si framework es válido
+        if not criteria_list or not evaluation_framework:
+            logger.error(f"No se encontraron criterios o framework en el análisis de RFP para pipeline {pipeline_id}")
             return {
-                "error": "No se encontraron criterios o pesos en el análisis de RFP",
+                "error": "No se encontraron criterios o framework en el análisis de RFP",
                 "analyzed_at": datetime.utcnow().isoformat()
             }
         
-        # Crear mapa de criterios por título para fácil acceso
-        criteria_map = {criterion.get("title"): criterion for criterion in criteria}
-        weight_map = {criterion.get("title"): criterion.get("weight") for criterion in weighted_criteria}
-        
-        # Evaluar propuesta contra cada criterio
-        logger.info(f"Evaluando {len(weighted_criteria)} criterios para pipeline {pipeline_id}")
         criteria_evaluations = []
         
+        logger.info(f"Iniciando evaluación de {len(criteria_list)} criterios para pipeline {pipeline_id}")
+        
         # Evaluar criterios
-        for criterion_with_weight in weighted_criteria:
-            criterion_title = criterion_with_weight.get("title")
-            criterion = criteria_map.get(criterion_title)
-            weight = criterion_with_weight.get("weight")
+        for criterion in criteria_list:
+            criterion_title = criterion.get("title")
+            criterion_description = criterion.get("description")
+            criterion_retrieve_search_text = criterion.get("retrieve_search_text")
             
-            if not criterion:
-                logger.warning(f"No se encontró información para el criterio {criterion_title} en pipeline {pipeline_id}")
-                continue
+            # Manejar el caso en que criterion_retrieve_search_text sea una lista
+            search_components = [criterion_title, criterion_description]
+            
+            # Si criterion_retrieve_search_text es una lista, unir sus elementos
+            if isinstance(criterion_retrieve_search_text, list):
+                search_components.extend([str(item) for item in criterion_retrieve_search_text if item])
+            elif criterion_retrieve_search_text:  # Si es una cadena no vacía
+                search_components.append(criterion_retrieve_search_text)
                 
-            try:
-                # Realizar búsqueda semántica y evaluación del criterio
-                evaluation = self._evaluate_criterion(
-                    proposal_text=proposal_text,
-                    criterion=criterion,
-                    weight=weight,
-                    scoring_scale=scoring_scale,
-                    pipeline_id=pipeline_id,
-                    db=db,
-                    user_id=user_id
-                )
-                
-                criteria_evaluations.append(evaluation)
-            except Exception as e:
-                logger.error(f"Error al evaluar criterio {criterion_title} para pipeline {pipeline_id}: {e}")
-                criteria_evaluations.append({
-                    "criterion": criterion_title,
-                    "score": 0,
-                    "weight": weight,
-                    "justification": f"Error al evaluar: {str(e)}",
-                    "strengths": [],
-                    "weaknesses": [],
-                    "recommendations": []
-                })
+            search_text = " ".join(filter(None, search_components))
+            logger.info(
+                f"Search text for criterion {criterion_title}: {search_text[:200]}..."
+            )
+                       
+            # Obtener peso del criterio
+            weight = 0
+            for fw_criterion in evaluation_framework.get("criteria", []):
+                if fw_criterion.get("title") == criterion_title:
+                    weight = fw_criterion.get("weight", 0)
+                    break
+
+            if search_text:
+                try:
+                    document_service = DocumentService(llm_client=self.llm_client)
+                    search_results = document_service.search_documents_by_analysis_id_sync(
+                        db=db,
+                        query=search_text,
+                        model=self.embedding_model,
+                        limit=5,
+                        min_similarity=0.2,
+                        user_id=uuid.UUID(user_id) if user_id else None,
+                        pipeline_id=pipeline_id
+                    )
+                    
+                    logger.info(f"Search results for criterion {criterion_title}: {search_results}")
+                    # Extraer texto relevante de los resultados
+                    if search_results and len(search_results) > 0:
+                        # Verificar si los resultados tienen el campo 'chunk_text' o 'content'
+                        if 'chunk_text' in search_results[0]:
+                            relevant_text = "\n\n".join([result.get("chunk_text", "") for result in search_results])
+                        else:
+                            relevant_text = "\n\n".join([result.get("content", "") for result in search_results])
+                        logger.info(f"Búsqueda semántica encontró {len(search_results)} resultados para criterio '{criterion_title}'")
+                        # Realizar evaluación del criterio
+                        try:
+                            # Usar búsqueda semántica y evaluación del criterio
+                            evaluation = self._evaluate_criterion(
+                                chunk=relevant_text,
+                                criterion=criterion,
+                                weight=weight,
+                                scoring_scale=evaluation_framework.get("scoring_scale", {}),
+                                pipeline_id=pipeline_id,
+                                db=db,
+                                user_id=user_id
+                            )
+                            criteria_evaluations.append(evaluation)
+                            logger.info(f"Criterio {criterion_title} evaluado con score {evaluation['score']}")
+                        except Exception as e:
+                            logger.error(f"Error al evaluar criterio {criterion_title} para pipeline {pipeline_id}: {e}")
+                            criteria_evaluations.append({
+                                "criterion": criterion_title,
+                                "score": 0,
+                                "weight": weight,
+                                "justification": f"Error al evaluar: {str(e)}",
+                                "strengths": [],
+                                "weaknesses": [],
+                                "recommendations": []
+                            })
+                    
+                    else:
+                        logger.warning(f"No se encontraron resultados en la búsqueda semántica para criterio '{criterion_title}'. Usando texto completo de la propuesta.")
+                except Exception as e:
+                    logger.error(f"Error en búsqueda semántica para criterio '{criterion_title}': {str(e)}. Usando texto completo de la propuesta.")
+            
         
         # Esperar a que terminen las evaluaciones técnicas y gramaticales
         try:
-            technical_evaluation = self._perform_technical_evaluation(proposal_text, user_id)
+            #technical_evaluation = self._perform_technical_evaluation(proposal_text, user_id)
+            technical_evaluation = {
+                "score": 0,
+                        "assessment": f"Error en evaluación técnica: {str(e)}",
+                "strengths": [],
+                "weaknesses": [],
+                "recommendations": []
+            }
+            
         except Exception as e:
             logger.error(f"Error en evaluación técnica para pipeline {pipeline_id}: {e}")
             technical_evaluation = {
@@ -122,9 +177,34 @@ class ProposalProcessor:
                 "weaknesses": [],
                 "recommendations": []
             }
-            
+        
         try:
-            grammar_evaluation = self._perform_grammar_evaluation(proposal_text, user_id)
+            #consistency_evaluation = self._perform_consistency_evaluation(proposal_text, user_id)
+            consistency_evaluation = {
+                "score": 0,
+                "assessment": f"Error en evaluación de consistencia: {str(e)}",
+                "strengths": [],
+                "weaknesses": [],
+                "recommendations": []
+            }
+        except Exception as e:
+            logger.error(f"Error en evaluación de consistencia para pipeline {pipeline_id}: {e}")
+            consistency_evaluation = {
+                "score": 0,
+                "assessment": f"Error en evaluación de consistencia: {str(e)}",
+                "strengths": [],
+                "weaknesses": [],
+                "recommendations": []
+            }
+        try:
+            #grammar_evaluation = self._perform_grammar_evaluation(proposal_text, user_id)
+            grammar_evaluation = {
+                "score": 0,
+                "assessment": "Error en evaluación gramatical: No se pudo realizar la evaluación gramatical",
+                "issues": [],
+                "strengths": [],
+                "recommendations": []
+            }
         except Exception as e:
             logger.error(f"Error en evaluación gramatical para pipeline {pipeline_id}: {e}")
             grammar_evaluation = {
@@ -136,12 +216,17 @@ class ProposalProcessor:
             }
         
         # Generar reporte final
-        final_report = self._generate_final_report(criteria_evaluations)
-        
+        #final_report = self._generate_final_report(criteria_evaluations)
+        final_report = {
+            "score": 0,
+            "assessment": "Error en generación de reporte final: No se pudo generar el reporte final",
+            "generated_at": datetime.utcnow().isoformat()
+        }
         # Compilar resultados
         results = {
             "criteria_evaluations": criteria_evaluations,
             "technical_evaluation": technical_evaluation,
+            "consistency_evaluation": consistency_evaluation,
             "grammar_evaluation": grammar_evaluation,
             "final_report": final_report,
             "analyzed_at": datetime.utcnow().isoformat()
@@ -152,7 +237,7 @@ class ProposalProcessor:
         
     def _evaluate_criterion(
         self, 
-        proposal_text: str, 
+        chunk: str, 
         criterion: Dict[str, Any],
         weight: int,
         scoring_scale: List[Dict[str, Any]],
@@ -181,19 +266,23 @@ class ProposalProcessor:
         
         # Preparar el prompt para la evaluación
         system_prompt = CRITERION_EVALUATOR_SYSTEM_PROMPT
+        
+        # Convertir scoring_scale a formato de texto para el prompt
+        scoring_scale_text = "\n".join([f"{score.get('score', '')}: {score.get('description', '')}" for score in scoring_scale]) if scoring_scale else ""
+        
         user_prompt = get_criterion_evaluation_prompt(
             criterion_title=criterion_title,
             criterion_description=criterion_description,
             criterion_requirements=criterion_requirements,
-            scoring_scale=scoring_scale,
-            proposal_text=proposal_text
+            scoring_scale=scoring_scale_text,
+            chunk=chunk
         )
         
         logger.info(f"Evaluando criterio '{criterion_title}' para pipeline {pipeline_id}")
         
         try:
             # Llamar al LLM para evaluar el criterio
-            response = self.llm_client.chat_completion(
+            response = self.llm_client.generate_chat_completion_sync(
                 model=self.default_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -261,7 +350,7 @@ class ProposalProcessor:
         
         try:
             # Llamar al LLM para evaluación técnica
-            response = self.llm_client.chat_completion(
+            response = self.llm_client.generate_chat_completion_sync(
                 model=self.default_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -319,7 +408,7 @@ class ProposalProcessor:
         
         try:
             # Llamar al LLM para evaluación gramatical
-            response = self.llm_client.chat_completion(
+            response = self.llm_client.generate_chat_completion_sync(
                 model=self.default_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -379,7 +468,7 @@ class ProposalProcessor:
                 ("user", get_consistency_evaluation_prompt(proposal_text))
             ]
             
-            response = self.llm_client.generate_chat_completion(
+            response = self.llm_client.generate_chat_completion_sync(
                 messages=[{"role": msg[0], "content": msg[1]} for msg in messages],
                 model=self.default_model,
                 temperature=0.3,
@@ -389,7 +478,7 @@ class ProposalProcessor:
             if isinstance(response, str):
                 evaluation = json.loads(response)
             else:
-                evaluation = json.loads(response.choices[0].message.content)
+                evaluation = json.loads(response.get("choices", [{}])[0].get("message", {}).get("content", "{}"))
                 
             return evaluation
             
@@ -407,10 +496,10 @@ class ProposalProcessor:
     def _generate_final_report(self, evaluations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Generar reporte final a partir de todas las evaluaciones de criterios
-        
+            
         Args:
             evaluations: Lista de evaluaciones de criterios
-            
+                
         Returns:
             Dict[str, Any]: Reporte final
         """
@@ -423,11 +512,9 @@ class ProposalProcessor:
                     weight_percentage = float(weight.strip("%")) / 100
                 else:
                     weight_percentage = float(weight) / 100
-
+                    
                 eval["weighted_score"] = eval["score"] * weight_percentage
-                eval["max_possible"] = (
-                    5 * weight_percentage
-                )  # 5 es la puntuación máxima posible
+                eval["max_possible"] = 5 * weight_percentage  # 5 es la puntuación máxima posible
 
             # Luego calcular totales
             total_weighted_score = sum(eval["weighted_score"] for eval in evaluations)
@@ -513,3 +600,4 @@ class ProposalProcessor:
                 "overall_assessment": "Could not generate assessment due to an error",
                 "generated_at": datetime.utcnow().isoformat(),
             }
+    

@@ -14,25 +14,11 @@ class TokenCounter:
     
     # Mapeo de modelos a codificadores
     MODEL_TO_ENCODING = {
-        # GPT-4 Turbo
-        "gpt-4-turbo-preview": "cl100k_base",
-        "gpt-4-0125-preview": "cl100k_base",
-        "gpt-4-1106-preview": "cl100k_base",
-        "gpt-4-vision-preview": "cl100k_base",
-        
+
         # GPT-4
         "gpt-4": "cl100k_base",
-        "gpt-4-0613": "cl100k_base",
-        "gpt-4-32k": "cl100k_base",
-        "gpt-4-32k-0613": "cl100k_base",
-        
-        # GPT-3.5 Turbo
-        "gpt-3.5-turbo": "cl100k_base",
-        "gpt-3.5-turbo-16k": "cl100k_base",
-        "gpt-3.5-turbo-0613": "cl100k_base",
-        "gpt-3.5-turbo-16k-0613": "cl100k_base",
-        "gpt-3.5-turbo-0301": "cl100k_base",
-        
+        "gpt-4-mini": "cl100k_base",
+
         # Embedding models
         "text-embedding-ada-002": "cl100k_base",
         "text-embedding-3-small": "cl100k_base",
@@ -41,24 +27,9 @@ class TokenCounter:
     
     # Límites de contexto por modelo (tokens)
     MODEL_CONTEXT_LIMITS = {
-        # GPT-4 Turbo
-        "gpt-4-turbo-preview": 128000,
-        "gpt-4-0125-preview": 128000,
-        "gpt-4-1106-preview": 128000,
-        "gpt-4-vision-preview": 128000,
-        
         # GPT-4
-        "gpt-4": 8192,
-        "gpt-4-0613": 8192,
-        "gpt-4-32k": 32768,
-        "gpt-4-32k-0613": 32768,
-        
-        # GPT-3.5 Turbo
-        "gpt-3.5-turbo": 4096,
-        "gpt-3.5-turbo-16k": 16384,
-        "gpt-3.5-turbo-0613": 4096,
-        "gpt-3.5-turbo-16k-0613": 16384,
-        "gpt-3.5-turbo-0301": 4096,
+        "gpt-4": 128000,
+        "gpt-4-mini": 128000, 
     }
     
     @classmethod
@@ -81,7 +52,7 @@ class TokenCounter:
             return tiktoken.get_encoding("cl100k_base")
     
     @classmethod
-    def count_tokens(cls, text: str, model: str = "gpt-3.5-turbo") -> int:
+    def count_tokens(cls, text: str, model: str = "gpt-4-mini") -> int:
         """
         Contar tokens en un texto para un modelo específico
         
@@ -99,7 +70,7 @@ class TokenCounter:
         return len(encoder.encode(text))
     
     @classmethod
-    def count_message_tokens(cls, messages: List[Dict[str, str]], model: str = "gpt-3.5-turbo") -> int:
+    def count_message_tokens(cls, messages: List[Dict[str, str]], model: str = "gpt-4-mini") -> int:
         """
         Contar tokens en una lista de mensajes para un modelo específico
         
@@ -137,7 +108,7 @@ class TokenCounter:
         return num_tokens
     
     @classmethod
-    def check_context_limit(cls, tokens: int, model: str = "gpt-3.5-turbo", buffer_percentage: float = 0.1) -> bool:
+    def check_context_limit(cls, tokens: int, model: str = "gpt-4-mini", buffer_percentage: float = 0.1) -> bool:
         """
         Verificar si el número de tokens está dentro del límite del contexto
         
@@ -157,7 +128,7 @@ class TokenCounter:
         return tokens <= adjusted_limit
     
     @classmethod
-    def truncate_text_to_token_limit(cls, text: str, model: str = "gpt-3.5-turbo", max_tokens: int = None) -> str:
+    def truncate_text_to_token_limit(cls, text: str, model: str = "gpt-4-mini", max_tokens: int = None) -> str:
         """
         Truncar texto para que no supere un límite de tokens
         
